@@ -1,0 +1,68 @@
+{
+  "methodology_version": 2,
+  "policy_version": "2.1",
+  "default_profile": "Standard",
+  "description": "Configuration-hardening score. This is not a guarantee that a device is secure.",
+  "profiles": {
+    "Standard": {
+      "description": "Personal Windows desktop baseline. Device encryption is recommended but informational by default.",
+      "checks": {
+        "bitlocker_system": {
+          "disposition": "Informational",
+          "explanation": "BitLocker is recommended for protecting data at rest, but the Standard personal-desktop profile excludes it from the scored denominator by default."
+        }
+      }
+    },
+    "Advanced": {
+      "description": "Stronger personal or professional endpoint baseline.",
+      "checks": {
+        "bitlocker_system": {
+          "disposition": "Scored",
+          "explanation": "The Advanced profile expects operating-system drive encryption and scores this check."
+        }
+      }
+    },
+    "Enterprise": {
+      "description": "Organization-managed endpoint baseline. Customize the policy file to match approved organizational requirements.",
+      "checks": {
+        "bitlocker_system": {
+          "disposition": "Scored",
+          "explanation": "The Enterprise baseline scores operating-system drive encryption; organizational policy remains authoritative."
+        }
+      }
+    }
+  },
+  "assessment_policy": {
+    "defender_signature_max_age_days": 7,
+    "approved_local_administrators": []
+  },
+  "categories": {
+    "Malware Protection": {"weight": 30},
+    "Network Security": {"weight": 20},
+    "OS Security": {"weight": 20},
+    "Account Security": {"weight": 15},
+    "Attack Surface": {"weight": 15}
+  },
+  "checks": {
+    "defender_realtime": {"category": "Malware Protection", "weight": 35, "severity": "Critical"},
+    "defender_cloud": {"category": "Malware Protection", "weight": 20, "severity": "High"},
+    "defender_tamper": {"category": "Malware Protection", "weight": 20, "severity": "High"},
+    "defender_signatures": {"category": "Malware Protection", "weight": 25, "severity": "High"},
+    "firewall_domain": {"category": "Network Security", "weight": 25, "severity": "High"},
+    "firewall_private": {"category": "Network Security", "weight": 25, "severity": "High"},
+    "firewall_public": {"category": "Network Security", "weight": 25, "severity": "Critical"},
+    "remote_desktop": {"category": "Network Security", "weight": 25, "severity": "Medium"},
+    "bitlocker_system": {"category": "OS Security", "weight": 30, "severity": "High"},
+    "secure_boot": {"category": "OS Security", "weight": 20, "severity": "High"},
+    "tpm": {"category": "OS Security", "weight": 15, "severity": "Medium"},
+    "windows_update": {"category": "OS Security", "weight": 20, "severity": "High"},
+    "uac": {"category": "OS Security", "weight": 15, "severity": "High"},
+    "guest_account": {"category": "Account Security", "weight": 40, "severity": "High"},
+    "local_admins": {"category": "Account Security", "weight": 60, "severity": "High"},
+    "smb1": {"category": "Attack Surface", "weight": 25, "severity": "Critical"},
+    "smartscreen": {"category": "Attack Surface", "weight": 25, "severity": "High"},
+    "powershell_logging": {"category": "Attack Surface", "weight": 25, "severity": "Medium"},
+    "autorun": {"category": "Attack Surface", "weight": 25, "severity": "Medium"}
+  }
+}
+
