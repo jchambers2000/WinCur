@@ -1,14 +1,20 @@
 # WinCur
 
-WinCur is a Windows 11 endpoint security assessment and hardening research
-project built with Python and PySide6. It presents selected Windows security
-configuration checks in a native desktop interface, explains how results affect
-an assessment score, and provides tightly scoped remediation previews for a
-small set of settings.
+WinCur is a native Windows 11 security assessment and hardening research
+application built with Python and PySide6. It evaluates selected endpoint
+security configurations, explains each result, and turns technical evidence
+into an understandable hardening score, assessment coverage, and prioritized
+next steps.
 
 This repository is published as a source-code portfolio project. WinCur is
 still under security review and is **not currently recommended for public
 binary distribution or production endpoint management**.
+
+<p align="center">
+  <img src="docs/screenshots/01-dashboard.png" alt="WinCur Overview dashboard showing the configuration-hardening score, assessment coverage, and priority findings" width="100%">
+</p>
+
+<p align="center"><em>The Overview dashboard summarizes assessed configuration strength, assessment coverage, and confirmed findings without presenting the score as a guarantee of security.</em></p>
 
 ## Project status
 
@@ -25,20 +31,29 @@ profiles—which can modify Windows after preview, confirmation, and UAC. Known
 limitations in the elevated-helper and rollback trust boundaries are documented
 in [SECURITY.md](SECURITY.md); do not use those workflows on production systems.
 
-## Highlights
+## Capabilities
 
-- Read-only checks for Microsoft Defender, Windows Firewall, BitLocker, Secure
-  Boot, TPM, Windows Update, UAC, local accounts, SMBv1, Remote Desktop,
-  SmartScreen, PowerShell logging, and AutoRun policy.
-- Explainable configuration-hardening score and assessment coverage.
-- Standard, Advanced, and Enterprise assessment profiles.
-- Clear Pass, Fail, Unknown, Not Applicable, and informational treatment.
-- Local assessment history, saved snapshots, comparison and drift analysis.
-- HTML report export with escaped and sanitized evidence.
-- Light, Dark, and Windows-system appearance modes.
-- Preview-first hardening workspace with explicit confirmation, UAC,
-  precondition revalidation, post-change verification, and rollback safeguards.
-- Portable PyInstaller development workflow with build IDs and manifest hashes.
+- **Windows security assessments:** read-only checks for Microsoft Defender,
+  Windows Firewall, BitLocker, Secure Boot, TPM, Windows Update, UAC, local
+  accounts, SMBv1, Remote Desktop, SmartScreen, PowerShell logging, and AutoRun
+  policy.
+- **Explainable results:** a configuration-hardening score, assessment coverage,
+  severity, plain-language findings, evidence, and recommended next steps.
+- **Assessment profiles:** Standard, Advanced, and Enterprise expectations with
+  explicit informational and Not Applicable treatment.
+- **Privilege-aware scans:** separate Standard and Administrator assessment modes
+  so additional visibility is not silently confused with a configuration change.
+- **Controlled hardening:** individually selected actions with a read-only
+  preview, explicit confirmation, UAC, precondition revalidation, verification,
+  audit records, and guarded rollback.
+- **Saved snapshots:** user-selected reference assessments for baseline
+  comparison and observed configuration-difference analysis.
+- **Local history and reporting:** persistent assessment history, hardening audit
+  records, and HTML report export with escaped and sanitized evidence.
+- **Native desktop experience:** Light, Dark, and Windows-system appearance modes
+  in a PySide6/Qt interface.
+- **Release engineering:** a portable PyInstaller development workflow with
+  unique build IDs, manifest hashes, packaging probes, and distribution checks.
 
 The score measures selected configuration-hardening settings. It is not a
 guarantee that a computer is secure and does not replace endpoint protection,
@@ -119,10 +134,37 @@ features.
 
 ## Screenshots
 
-No publication-ready application screenshots are currently included. The
-portrait and icon under `wincur/assets/` are runtime branding assets, not UI
-screenshots, and should be published only after their copyright and likeness
-permissions are confirmed.
+### Security Issues
+
+The checklist separates confirmed results from informational, unavailable, and
+unassessed checks. Selecting a row opens its explanation and recommended next
+step without crowding the table with raw evidence.
+
+![WinCur Security Issues checklist with status, severity, summaries, and selected finding details](docs/screenshots/02-security-issues.png)
+
+### Fix Workspace
+
+Supported hardening actions are selected individually. WinCur displays the
+current and recommended configuration and requires a successful preview before
+Apply becomes available; it does not run every fix automatically.
+
+![WinCur Fix Workspace showing individually selectable hardening actions and the preview-required state](docs/screenshots/03-hardening.png)
+
+### Saved snapshot comparison
+
+A saved assessment can be used as a reference for later comparisons. Results
+distinguish observed improvements, regressions, unchanged checks, and cases
+that require review because evidence or assessment visibility differs.
+
+![WinCur Saved Snapshot Comparison showing summary counts and detailed check-by-check differences](docs/screenshots/04-snapshots.png)
+
+### Activity history
+
+Assessment and hardening activity remain local. Scan history records timestamp,
+privilege, profile, score, and coverage while clearly treating saved assessments
+as historical rather than current device state.
+
+![WinCur Activity page showing locally persisted assessment history](docs/screenshots/05-activity.png)
 
 ## Packaging
 
