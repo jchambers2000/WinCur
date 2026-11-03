@@ -64,12 +64,25 @@ IDs but must use one explicit mapping to protocol IDs.
 - Reads configuration and management evidence.
 - Performs no mutation and creates no rollback capsule.
 - Writes a bounded sanitized result.
+- Phase 2C-1 reports exact selected-value compliance separately from management
+  authority. A completed result means collection finished and was durably
+  recorded; only the `Outcome` and `MessageCode` describe whether inspection
+  was conclusive.
 
 ### Apply
 
 - Re-reads current state and management ownership.
 - Refuses already compliant, managed, ambiguous, unsupported, or stale state.
-- Displays the helper's exact confirmation.
+- Displays the helper's exact action-specific confirmation. The fixed dialog
+  identifies the operation, action, proposed change, affected Windows setting,
+  and security implications. Its default is Cancel, Escape/window closure is
+  cancellation, and the development timeout is five minutes.
+- Binds the in-process confirmation receipt to the operation, action,
+  transaction UUID, optional rollback UUID, and an unpredictable one-use
+  challenge. A mismatch or reuse is denial.
+- Re-reads the relevant evidence after confirmation. A newly compliant,
+  managed, ambiguous, inaccessible, unsupported, or failed state blocks the
+  operation.
 - Writes protected pre-change state before mutation.
 - Applies one compiled action, verifies, and records the outcome.
 - Never starts an assessment.
@@ -82,6 +95,27 @@ IDs but must use one explicit mapping to protocol IDs.
 - Displays exact restoration in a helper-owned confirmation.
 - Restores only fixed targets and verifies.
 - Rejects firewall rollback because no firewall capsule exists.
+
+### Phase 2C-2 implementation boundary
+
+Preview remains read-only and never displays confirmation. Apply performs the
+initial inspection, helper-owned confirmation, and post-confirmation inspection,
+then returns the explicit non-mutating `NotImplemented` result. Managed or
+ambiguous evidence never reaches the dialog. Rollback is blocked before a
+dialog because protected rollback capsules are not implemented; the shared
+confirmation state machine already supports a future resolved AutoRun or
+PowerShell rollback binding.
+
+Cancellation, timeout, dialog failure, binding mismatch, and validation blocks
+are representable as complete protected results. `Complete=1` means only that
+the result record is durably and structurally complete. It does not mean the
+user confirmed or that a change succeeded.
+
+The current development helper creates the result record after authorization.
+Before any mutation backend is enabled, it must reserve the transaction UUID in
+protected state before confirmation and must recover incomplete reservations.
+The in-process one-use receipt is not a substitute for protected cross-process
+transaction replay prevention.
 
 ## Exit codes
 
@@ -310,6 +344,11 @@ Partial and Interrupted capsules are not automatically retryable.
 - Fixed HKLM `NoAutorun` DWORD `1`.
 - Exact value, type, absence, and key existence are preserved.
 - Operation-created keys are removed only when still empty.
+- Preview reads only these two values in the 64-bit HKLM view. Both missing is
+  `RemediationRequired` without asserting that the machine is unmanaged. Exact
+  DWORD compliance is `AlreadyCompliant`; malformed, mixed, or explicit
+  conflicting policy evidence is ambiguous unless a reliable provider proves
+  management authority.
 
 ### Enable PowerShell audit logging
 
@@ -317,6 +356,9 @@ Partial and Interrupted capsules are not automatically retryable.
 - `EnableModuleLogging` DWORD `1`.
 - `ModuleNames\*` string `*`.
 - The helper never executes PowerShell.
+- Preview requires exact DWORD values and the exact REG_SZ wildcard. All three
+  missing is `RemediationRequired` without asserting that policy ownership is
+  absent. Mixed, malformed, or conflicting policy evidence fails closed.
 
 ### Enable firewall profiles
 
@@ -325,6 +367,11 @@ Partial and Interrupted capsules are not automatically retryable.
 - Blocks Group Policy override, MDM management, and ambiguous ownership.
 - Verifies all three profiles.
 - Creates no rollback capsule.
+- Preview reads effective Domain, Private, and Public enablement through
+  `INetFwPolicy2`. `NET_FW_MODIFY_STATE_GP_OVERRIDE` is positive Group Policy
+  evidence. `NET_FW_MODIFY_STATE_OK` is not treated as proof that changing the
+  profile-enable property would be authoritative, because the documented API
+  describes local rule/group modification state.
 
 ## Concurrency and retention
 

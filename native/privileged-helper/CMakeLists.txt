@@ -5,7 +5,7 @@ cmake_policy(SET CMP0091 NEW)
 project(
     WinCurPrivilegedHelper
     VERSION 1.0.0
-    DESCRIPTION "WinCur non-mutating privileged-helper skeleton"
+    DESCRIPTION "WinCur native privileged-helper confirmation foundation"
     LANGUAGES CXX RC
 )
 
@@ -80,6 +80,8 @@ add_library(
     STATIC
         src/protocol.cpp
         src/stub_backend.cpp
+        src/inspection.cpp
+        src/confirmation.cpp
         src/transaction.cpp
 )
 target_include_directories(wincur_helper_core PUBLIC include)
@@ -89,6 +91,8 @@ add_library(
     wincur_helper_windows
     STATIC
         src/registry_security.cpp
+        src/windows_confirmation.cpp
+        src/windows_inspection.cpp
         src/windows_transaction_store.cpp
 )
 target_include_directories(wincur_helper_windows PUBLIC include)
@@ -97,6 +101,9 @@ target_link_libraries(
     PUBLIC
         wincur_helper_core
         Advapi32
+        Bcrypt
+        Comctl32
+        Ole32
 )
 wincur_harden_target(wincur_helper_windows)
 
@@ -174,6 +181,88 @@ if(BUILD_TESTING)
         NAME privileged_helper_registry_security
         COMMAND WinCur.PrivilegedHelper.RegistrySecurityTests
     )
+
+    add_executable(
+        WinCur.PrivilegedHelper.InspectionTests
+        tests/inspection_tests.cpp
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.InspectionTests
+        PRIVATE
+            wincur_helper_core
+    )
+    wincur_harden_executable(WinCur.PrivilegedHelper.InspectionTests)
+    add_test(
+        NAME privileged_helper_inspection
+        COMMAND WinCur.PrivilegedHelper.InspectionTests
+    )
+
+    add_executable(
+        WinCur.PrivilegedHelper.ConfirmationTests
+        tests/confirmation_tests.cpp
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.ConfirmationTests
+        PRIVATE
+            wincur_helper_core
+    )
+    wincur_harden_executable(WinCur.PrivilegedHelper.ConfirmationTests)
+    add_test(
+        NAME privileged_helper_confirmation
+        COMMAND WinCur.PrivilegedHelper.ConfirmationTests
+    )
+endif()
+
+option(
+    WINCUR_BUILD_INSPECTION_INTEGRATION_TESTS
+    "Build opt-in read-only Windows security inspection tests"
+    OFF
+)
+if(WINCUR_BUILD_INSPECTION_INTEGRATION_TESTS)
+    add_executable(
+        WinCur.PrivilegedHelper.InspectionIntegrationTests
+        tests/inspection_integration_tests.cpp
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.InspectionIntegrationTests
+        PRIVATE
+            wincur_helper_windows
+    )
+    wincur_harden_executable(
+        WinCur.PrivilegedHelper.InspectionIntegrationTests
+    )
+endif()
+
+option(
+    WINCUR_BUILD_CONFIRMATION_INTEGRATION_TESTS
+    "Build opt-in disposable-VM native confirmation dialog tests"
+    OFF
+)
+if(WINCUR_BUILD_CONFIRMATION_INTEGRATION_TESTS)
+    add_executable(
+        WinCur.PrivilegedHelper.ConfirmationIntegrationTests
+            tests/confirmation_integration_tests.cpp
+            resources/helper.rc
+    )
+    target_include_directories(
+        WinCur.PrivilegedHelper.ConfirmationIntegrationTests
+        PRIVATE
+            include
+            resources
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.ConfirmationIntegrationTests
+        PRIVATE
+            wincur_helper_windows
+    )
+    wincur_harden_executable(
+        WinCur.PrivilegedHelper.ConfirmationIntegrationTests
+    )
+    target_link_options(
+        WinCur.PrivilegedHelper.ConfirmationIntegrationTests
+        PRIVATE
+            /MANIFEST:NO
+    )
 endif()
 
 option(
@@ -198,6 +287,7 @@ if(WINCUR_BUILD_REGISTRY_INTEGRATION_TESTS)
         PUBLIC
             wincur_helper_core
             Advapi32
+            Ole32
     )
     target_compile_definitions(
         wincur_helper_windows_registry_integration

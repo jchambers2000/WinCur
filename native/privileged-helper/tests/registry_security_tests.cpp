@@ -1,4 +1,5 @@
 #include "wincur/helper/registry_security.hpp"
+#include "wincur/helper/windows_inspection.hpp"
 
 #include <Sddl.h>
 
@@ -38,6 +39,8 @@ void Check(const bool condition, const char* const description) {
 }  // namespace
 
 int main() {
+    Check(wincur::helper::kInspectionRegistryView == KEY_WOW64_64KEY,
+          "security inspection is pinned to the 64-bit registry view");
     Check(
         ValidateSddl(wincur::helper::kPublicRegistrySecurityDescriptor),
         "exact protected public ACL is accepted"

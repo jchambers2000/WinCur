@@ -1,17 +1,20 @@
-# WinCur native privileged helper — Phase 2B
+# WinCur native privileged helper — Phase 2C-2
 
 This directory contains the C++20/Win32 skeleton for the future
 `WinCur.PrivilegedHelper.exe`. It implements strict protocol parsing, the
 global operation mutex, protected transaction results, embedded metadata, an
-Administrator manifest, and a non-mutating stub backend.
+Administrator manifest, native read-only preview providers for the three
+existing hardening actions, and a helper-owned confirmation boundary.
 
 The helper is **not connected to WinCur, not signed, and not suitable for
-distribution**. A syntactically valid request records an explicit `Failed` /
-`NotImplemented` result beneath the protected 64-bit
-`HKLM\SOFTWARE\WinCur\Transactions` namespace, displays `NotImplemented`, and
-returns protocol exit code `0` because the completed protected result is
-authoritative. It does not read or modify Windows security configuration and
-does not create rollback state.
+distribution**. A valid `preview` request reads only compiled Windows targets
+and writes a bounded result beneath the protected 64-bit
+`HKLM\SOFTWARE\WinCur\Transactions` namespace. An eligible `apply` request
+displays a native action-specific dialog, binds the response to the exact
+request, and repeats read-only inspection before reaching the explicit
+`Failed` / `NotImplemented` stub. `rollback` remains blocked because no
+protected capsule exists. The helper performs no Windows security configuration
+writes and creates no rollback state.
 
 The controlling specifications are:
 
@@ -79,13 +82,20 @@ Do not invoke the helper merely to test parsing on a development machine. The
 parser unit-test executable links the same parser and stub backend without an
 Administrator manifest or UAC prompt.
 
-## Phase 2B boundary
+## Phase 2C boundary
+
+The preview implementation reads only:
+
+- the fixed 64-bit HKLM AutoRun values `NoDriveTypeAutoRun` and `NoAutorun`;
+- the fixed 64-bit HKLM Script Block Logging, Module Logging, and `ModuleNames`
+  wildcard policy values; and
+- effective Domain, Private, and Public profile state through `INetFwPolicy2`,
+  plus its documented `LocalPolicyModifyState` evidence.
 
 The executable contains no:
 
-- Windows security-setting provider;
-- registry configuration read/write code;
-- firewall COM client;
+- Windows security-configuration writer;
+- remediation or rollback provider;
 - rollback transport or rollback execution;
 - filesystem request/result transport;
 - Python, Qt, PowerShell, shell, or external-process execution; or
@@ -97,10 +107,68 @@ Existing parents are accepted only when their owner and DACL exactly match the
 compiled policy. Result records use bounded fields and write `Complete=1` last.
 Readers reject incomplete, malformed, unexpected, or untrusted records.
 
-Helper-owned action confirmation, signing, UI integration, rollback capsules,
-and every security-setting action remain future milestones. Process exit alone
-is never an operation outcome; future clients must read and validate the
-completed protected result.
+Registry policy value locations do not identify whether a local administrator,
+Local Group Policy, domain Group Policy, or MDM authored a value. Exact
+compliance is reportable, but explicit conflicting values are blocked as
+ambiguous instead of being called safely remediable. For firewall, a documented
+Group Policy override is managed evidence; a non-override result is not claimed
+as proof that a future profile write is authorized. Target-specific MDM source
+attribution remains unresolved.
+
+Phase 2C-2 adds a helper-owned Task Dialog for future apply and rollback
+authorization. The fixed content names the action, proposed change, affected
+setting, and security implications. Cancel, Escape, window closure, timeout,
+dialog failure, binding mismatch, and reuse all deny authorization. Managed or
+ambiguous evidence blocks before the dialog and again during the mandatory
+post-confirmation read-only revalidation.
+
+Signing, UI integration, rollback capsules, and every security-setting mutation
+remain future milestones. Process exit alone is never an operation outcome;
+future clients must read and validate the completed protected result. A complete
+result does not imply confirmation or success. Protected transaction
+pre-reservation remains required before any mutation backend is enabled.
+
+## Disposable-VM confirmation dialog test
+
+The optional confirmation harness embeds the same Administrator manifest and
+uses the production native presenter, but it has no inspection or transaction
+storage behavior and cannot change a security setting:
+
+```powershell
+cmake --preset msvc-x64-release `
+  -DWINCUR_BUILD_CONFIRMATION_INTEGRATION_TESTS=ON
+cmake --build --preset msvc-x64-release `
+  --target WinCur.PrivilegedHelper.ConfirmationIntegrationTests
+
+$env:WINCUR_RUN_CONFIRMATION_INTEGRATION = `
+  'DISPOSABLE_WINDOWS_11_VM_NATIVE_DIALOG'
+.\build\msvc-x64-release\WinCur.PrivilegedHelper.ConfirmationIntegrationTests.exe
+```
+
+Run it only in a disposable Windows 11 VM. Accept UAC, inspect the exact fixed
+text, and exercise Confirm, Cancel, Escape, and title-bar Close in separate
+invocations. Confirm exits 0; cancellation and closure exit 10. The five-minute
+timeout may be checked in a dedicated invocation. No protected transaction is
+created by this harness.
+
+## Disposable-VM read-only inspection test
+
+The optional integration executable calls the three native collectors directly.
+It does not create a protected transaction or write registry state:
+
+```powershell
+cmake --preset msvc-x64-release `
+  -DWINCUR_BUILD_INSPECTION_INTEGRATION_TESTS=ON
+cmake --build --preset msvc-x64-release `
+  --target WinCur.PrivilegedHelper.InspectionIntegrationTests
+$env:WINCUR_RUN_READ_ONLY_INSPECTION_INTEGRATION = `
+  'DISPOSABLE_WINDOWS_11_VM_READ_ONLY_INSPECTION'
+.\build\msvc-x64-release\WinCur.PrivilegedHelper.InspectionIntegrationTests.exe
+```
+
+Run it in both standard and elevated VM sessions. Compare its stable message
+codes with independent read-only registry and firewall queries. It prints no
+raw policy values, user identity, or management enrollment details.
 
 ## Disposable-VM registry integration tests
 

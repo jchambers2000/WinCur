@@ -1,6 +1,6 @@
 # ADR-0001: Portable native privileged helper
 
-- Status: Accepted for implementation; not yet implemented
+- Status: Accepted; M1-M3 foundation and M4 confirmation boundary implemented
 - Date: 2026-11-01
 - Application version: WinCur 1.0.0 development candidate
 - Scoring policy: 2.1 (unchanged)
@@ -176,6 +176,11 @@ UAC plus the helper confirmation because the UI is user-writable.
   therefore must be present in the first public helper.
 - Policy APIs may remain ambiguous; ambiguity blocks mutation.
 - The helper must not interpret appended unsigned PE content.
+- Phase 2C-2 supplies one-use, exactly bound helper confirmation and repeats
+  read-only inspection after confirmation. No mutation backend or rollback
+  capsule exists. Before mutation is implemented, the transaction UUID must be
+  reserved in protected state before the dialog so a second helper process
+  cannot reuse a completed or in-flight identifier.
 
 ## References
 

@@ -1,11 +1,14 @@
 #include "wincur/helper/operation_mutex.hpp"
+#include "wincur/helper/confirmation.hpp"
+#include "wincur/helper/inspection.hpp"
 #include "wincur/helper/protocol.hpp"
 #include "wincur/helper/stub_backend.hpp"
 #include "wincur/helper/transaction.hpp"
 #include "wincur/helper/windows_transaction_store.hpp"
+#include "wincur/helper/windows_confirmation.hpp"
+#include "wincur/helper/windows_inspection.hpp"
 
 #include <Windows.h>
-#include <CommCtrl.h>
 #include <Shellapi.h>
 
 #include <cstddef>
@@ -22,25 +25,37 @@ using wincur::helper::ExitCode;
     return static_cast<int>(code);
 }
 
-void ShowNotImplemented() noexcept {
-    TASKDIALOGCONFIG configuration{};
-    configuration.cbSize = sizeof(configuration);
-    configuration.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
-    configuration.dwCommonButtons = TDCBF_CLOSE_BUTTON;
-    configuration.pszWindowTitle = L"WinCur Privileged Helper";
-    configuration.pszMainIcon = TD_INFORMATION_ICON;
-    configuration.pszMainInstruction = L"NotImplemented";
-    configuration.pszContent =
-        L"This development helper contains no privileged operation backend. "
-        L"No Windows security configuration was read or changed.";
+[[nodiscard]] ExitCode PersistResult(
+    const wincur::helper::TransactionResult& result,
+    const ExitCode success_code
+) noexcept {
+    wincur::helper::WindowsTransactionStorage storage;
+    if (wincur::helper::PersistTransactionResult(storage, result) !=
+        wincur::helper::PersistStatus::Success) {
+        return ExitCode::ProtectedStateError;
+    }
+    static_cast<void>(wincur::helper::PruneCompletedTransactionResults());
+    return success_code;
+}
 
-    int selected_button = 0;
-    TaskDialogIndirect(
-        &configuration,
-        &selected_button,
-        nullptr,
-        nullptr
-    );
+[[nodiscard]] ExitCode ExitForAuthorization(
+    const wincur::helper::AuthorizationStatus status
+) noexcept {
+    using wincur::helper::AuthorizationStatus;
+    switch (status) {
+        case AuthorizationStatus::Cancelled:
+        case AuthorizationStatus::TimedOut:
+            return ExitCode::UserCancelled;
+        case AuthorizationStatus::BlockedManaged:
+        case AuthorizationStatus::BlockedAmbiguous:
+        case AuthorizationStatus::BlockedPrecondition:
+        case AuthorizationStatus::UnsupportedRequest:
+            return ExitCode::Blocked;
+        case AuthorizationStatus::Confirmed:
+            return ExitCode::Success;
+        default:
+            return ExitCode::Failed;
+    }
 }
 
 }  // namespace
@@ -107,6 +122,84 @@ int WINAPI wWinMain(
                 break;
         }
 
+        if (parse_result.request->operation == wincur::helper::Operation::Preview &&
+            parse_result.request->action.has_value()) {
+            const std::wstring timestamp = wincur::helper::CurrentUtcTimestamp();
+            if (timestamp.empty()) {
+                return ToExitCode(ExitCode::InternalError);
+            }
+            const wincur::helper::InspectionResult inspection =
+                wincur::helper::InspectWindowsAction(*parse_result.request->action);
+            const wincur::helper::TransactionResult result =
+                wincur::helper::MakeInspectionTransactionResult(
+                    *parse_result.request,
+                    inspection,
+                    timestamp
+                );
+            return ToExitCode(PersistResult(result, ExitCode::Success));
+        }
+
+        if (parse_result.request->operation == wincur::helper::Operation::Rollback) {
+            const std::wstring timestamp = wincur::helper::CurrentUtcTimestamp();
+            if (timestamp.empty()) {
+                return ToExitCode(ExitCode::InternalError);
+            }
+            const wincur::helper::AuthorizationResult authorization{
+                wincur::helper::AuthorizationStatus::BlockedPrecondition,
+                L"RollbackCapsuleUnavailable",
+                L"Protected rollback capsules are not implemented in this development helper.",
+                L"No rollback was authorized and no Windows security setting was changed.",
+            };
+            const auto result =
+                wincur::helper::MakeAuthorizationTransactionResult(
+                    *parse_result.request,
+                    authorization,
+                    timestamp
+                );
+            return ToExitCode(PersistResult(result, ExitCode::Blocked));
+        }
+
+        if (parse_result.request->operation == wincur::helper::Operation::Apply &&
+            parse_result.request->action.has_value()) {
+            const wincur::helper::ActionId action =
+                *parse_result.request->action;
+            const wincur::helper::InspectionResult initial =
+                wincur::helper::InspectWindowsAction(action);
+            wincur::helper::WindowsConfirmationPresenter presenter;
+            const std::uint64_t challenge =
+                wincur::helper::CreateConfirmationChallenge();
+            const auto authorization = wincur::helper::AuthorizeMutation(
+                *parse_result.request,
+                action,
+                wincur::helper::ReadinessFromInspection(initial),
+                presenter,
+                [action]() noexcept {
+                    return wincur::helper::ReadinessFromInspection(
+                        wincur::helper::InspectWindowsAction(action)
+                    );
+                },
+                challenge
+            );
+            if (authorization.status !=
+                wincur::helper::AuthorizationStatus::Confirmed) {
+                const std::wstring timestamp =
+                    wincur::helper::CurrentUtcTimestamp();
+                if (timestamp.empty()) {
+                    return ToExitCode(ExitCode::InternalError);
+                }
+                const auto result =
+                    wincur::helper::MakeAuthorizationTransactionResult(
+                        *parse_result.request,
+                        authorization,
+                        timestamp
+                    );
+                return ToExitCode(PersistResult(
+                    result,
+                    ExitForAuthorization(authorization.status)
+                ));
+            }
+        }
+
         const wincur::helper::BackendOutcome outcome =
             wincur::helper::ExecuteStub(*parse_result.request);
         if (outcome == wincur::helper::BackendOutcome::NotImplemented) {
@@ -119,15 +212,7 @@ int WINAPI wWinMain(
                     *parse_result.request,
                     timestamp
                 );
-            wincur::helper::WindowsTransactionStorage storage;
-            const wincur::helper::PersistStatus persist_status =
-                wincur::helper::PersistTransactionResult(storage, result);
-            if (persist_status != wincur::helper::PersistStatus::Success) {
-                return ToExitCode(ExitCode::ProtectedStateError);
-            }
-            static_cast<void>(wincur::helper::PruneCompletedTransactionResults());
-            ShowNotImplemented();
-            return ToExitCode(ExitCode::Success);
+            return ToExitCode(PersistResult(result, ExitCode::Failed));
         }
 
         return ToExitCode(ExitCode::InternalError);

@@ -1,7 +1,10 @@
 # Portable privileged helper: threat model and implementation plan
 
 This turns ADR-0001 and protocol version 1 into implementation and test work.
-Phase 1 is documentation only; no native helper or integration exists yet.
+M1 and M2 are implemented as a development foundation. Phase 2C-1 implemented
+fixed-target read-only inspection. Phase 2C-2 adds helper-owned confirmation,
+one-use binding, cancellation handling, and post-confirmation revalidation
+without enabling a security-configuration write.
 
 - [Architecture decision record](0001-portable-native-privileged-helper.md)
 - [Protocol version 1](privileged-helper-protocol-v1.md)
@@ -164,19 +167,45 @@ M2 writes only WinCur's protected protocol registry namespace.
 
 ### M3 — Read-only native preview
 
-- [ ] Port capture and management detection for all three actions.
-- [ ] Produce human-readable descriptions without raw dictionaries.
-- [ ] Compare native results with Python backend fixtures.
-- [ ] Block every ambiguous management state.
+- [x] Port fixed-target capture for all three actions.
+- [x] Produce bounded human-readable descriptions without raw dictionaries.
+- [ ] Compare native results with Python backend fixtures and VM evidence.
+- [x] Block ambiguous, inaccessible, malformed, and unsupported evidence.
+- [ ] Add target-specific positive Group Policy/MDM attribution for registry
+  actions only where a documented Windows provider is sufficiently reliable.
+
+Phase 2C-1 intentionally does not infer organization management from domain
+join, MDM enrollment alone, or the mere presence of a registry policy value.
+Those signals do not prove which authority owns the selected target. Exact
+compliance remains observable; conflicting existing values are ambiguous and
+cannot authorize a future mutation. Firewall Group Policy override is accepted
+only from the documented `INetFwPolicy2::LocalPolicyModifyState` result.
 
 ### M4 — Apply and verification
 
-- [ ] Implement helper-owned confirmation.
+- [x] Implement helper-owned action-specific confirmation and cancellation.
+- [x] Bind a one-use receipt to operation, action, transaction, rollback ID,
+  and an unpredictable challenge.
+- [x] Revalidate read-only evidence after apply confirmation.
+- [ ] Reserve the protected transaction UUID before displaying a mutation
+  confirmation and reconcile interrupted reservations.
 - [ ] Port AutoRun apply and verification.
 - [ ] Port PowerShell logging apply and verification.
 - [ ] Port firewall COM apply and verification.
 - [ ] Write protected state before registry mutation.
 - [ ] Preserve partial and failed verification reporting.
+
+Phase 2C-2 uses a native Task Dialog in the elevated helper. Cancel, Escape,
+window closure, five-minute timeout, dialog creation failure, receipt mismatch,
+and receipt reuse all deny authorization. The dialog content is compiled into
+the helper; the Python UI supplies none of it. Initial managed or ambiguous
+evidence blocks before the dialog, and fresh managed or ambiguous evidence
+blocks after confirmation. Apply still ends at the non-mutating backend.
+
+Rollback confirmation cannot be offered by the executable until a protected
+capsule resolves the action and proves exact owned state. Rollback therefore
+returns `BlockedPrecondition` in this phase. Unit tests exercise the future
+binding path without creating or trusting rollback state.
 
 ### M5 — Protected rollback
 
@@ -292,6 +321,9 @@ snapshot revert.
 - Lower-integrity automation cannot confirm the elevated dialog.
 - UAC denial, cancellation, helper cancellation, crash, hang, and UI exit never
   claim success.
+- Confirmation receipts are process-local and one-use. Cross-process replay is
+  ultimately prevented by protected transaction reservation; that reservation
+  ordering remains mandatory before a mutation backend can be enabled.
 
 ### Action compatibility
 
