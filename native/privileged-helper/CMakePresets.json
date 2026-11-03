@@ -1,0 +1,41 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "msvc-x64-release",
+      "displayName": "MSVC v143 x64 Release (Ninja)",
+      "description": "Pinned Windows 11 SDK and static MSVC runtime build from an MSVC x64 environment.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/msvc-x64-release",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_SYSTEM_VERSION": "10.0.26100.0"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "msvc-x64-release",
+      "configurePreset": "msvc-x64-release",
+      "jobs": 1
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "msvc-x64-release",
+      "configurePreset": "msvc-x64-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+#pragma once
+
+#define IDR_HELPER_MANIFEST 1
+#define VER_FILEVERSION 1,0,0,0
+#define VER_FILEVERSION_STR "1.0.0.0\0"
+#define VER_PROTOCOLVERSION_STR "1\0"
