@@ -12,7 +12,7 @@
 namespace wincur::helper {
 
 inline constexpr std::uint32_t kTransactionSchemaVersion = 1;
-inline constexpr std::wstring_view kHelperBuildId = L"phase-2d-dev";
+inline constexpr std::wstring_view kHelperBuildId = L"phase-2e1-dev";
 inline constexpr std::size_t kMaximumDisplayMessageCharacters = 2048;
 inline constexpr std::size_t kMaximumVerificationSummaryCharacters = 4096;
 inline constexpr std::size_t kMaximumCompletedTransactions = 256;

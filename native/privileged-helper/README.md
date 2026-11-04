@@ -138,6 +138,40 @@ result does not imply confirmation or success. Reservation is implemented;
 protected rollback capsules and mutation-aware crash reconciliation remain
 required before any mutation backend can be enabled.
 
+Phase 2E-1 adds the non-mutating foundation for protected pre-change capsules.
+The serializer preserves registry absence, type, and exact bytes. The Windows
+store uses a private SYSTEM/Administrators-only ACL under the fixed 64-bit HKLM
+namespace. Completion is flushed last, capsule IDs cannot be overwritten, and
+the 256-record bound refuses new writes rather than pruning rollback authority.
+Read-only reconciliation never retries or automatically rolls back. Firewall
+local state remains unresolved, so firewall mutation remains disabled.
+Registry policy-path ownership is likewise recorded as ambiguous because a
+read alone cannot distinguish local, domain, or MDM authority.
+
+Build the opt-in disposable-VM capsule harness with:
+
+```powershell
+cmake --preset msvc-x64-release `
+  -DWINCUR_BUILD_REGISTRY_INTEGRATION_TESTS=ON `
+  -DWINCUR_BUILD_CAPSULE_INTEGRATION_TESTS=ON
+cmake --build --preset msvc-x64-release `
+  --target WinCur.PrivilegedHelper.CapsuleIntegrationTests
+```
+
+Run only from an elevated shell in a disposable VM after verifying the
+dedicated `HKLM\SOFTWARE\WinCurNativeHelperTests` namespace is absent:
+
+```powershell
+$env:WINCUR_RUN_CAPSULE_REGISTRY_TESTS = `
+  'I_UNDERSTAND_DISPOSABLE_VM_ONLY'
+.\build\msvc-x64-release\WinCur.PrivilegedHelper.CapsuleIntegrationTests.exe
+```
+
+The harness refuses a preexisting test root, writes one generated capsule only
+under that namespace, performs fixed-target read-only AutoRun capture and
+reconciliation, and removes only the root it created. Restore the disposable
+VM snapshot after testing even if cleanup reports success.
+
 ## Phase 2D boundary
 
 Phase 2D implements `Reserved`, `AwaitingConfirmation`, `Confirmed`,

@@ -185,6 +185,13 @@ UAC plus the helper confirmation because the UI is user-writable.
 - Registry ACLs prevent ordinary users from transitioning protected state. They
   cannot distinguish the authentic helper from another Administrator; existing
   Administrators remain outside the stated attacker boundary.
+- Phase 2E-1 implements private, versioned pre-change capsules and read-only
+  reconciliation. Capsules preserve fixed-target key/value absence, registry
+  type, and exact bytes, but are not yet wired to apply or rollback.
+- Firewall effective state and modify authority are readable through documented
+  COM interfaces, but rollback-grade local per-profile state is not established.
+  Firewall mutation stays disabled rather than treating effective state as
+  locally owned configuration.
 
 ## References
 

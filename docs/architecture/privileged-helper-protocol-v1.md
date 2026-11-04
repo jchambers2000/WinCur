@@ -323,6 +323,84 @@ exceeds the 4,096-key safety bound, the helper blocks rather than deleting data.
 
 ## Rollback capsule schema
 
+### Phase 2E-1 protected pre-change capsule (implemented foundation)
+
+Phase 2E-1 stores a pre-change capsule under the private, fixed 64-bit-view key
+`HKLM\SOFTWARE\WinCur\Rollback\{capsule UUID}`. The capsule UUID is bound to a
+canonical transaction UUID; no caller-controlled path or registry target is
+accepted. The container and capsule use the private ACL described above.
+Existing keys, registry links, unexpected owners, inherited permissions, extra
+principals, and schema mismatches fail closed.
+
+| Value | Type | Rule |
+|---|---|---|
+| `CapsuleSchemaVersion` | `REG_DWORD` | exactly `1` |
+| `ProtocolVersion` | `REG_DWORD` | exactly `1` |
+| `CapsuleId` | `REG_SZ` | canonical UUID; matches key |
+| `TransactionId` | `REG_SZ` | canonical bound transaction UUID |
+| `Operation` | `REG_SZ` | exactly `apply` in Phase 2E-1 |
+| `Action` | `REG_SZ` | fixed protocol action ID |
+| `HelperVersion` | `REG_SZ` | exact producing helper version |
+| `BuildIdentity` | `REG_SZ` | exact producing build identity |
+| `CreatedUtc` | `REG_SZ` | bounded UTC timestamp |
+| `Authority` | `REG_DWORD` | bounded policy-authority enum |
+| `StateKind` | `REG_DWORD` | registry or firewall |
+| `TargetCount` | `REG_DWORD` | 2 for AutoRun; 3 otherwise |
+| `TargetNKeyExists` | `REG_DWORD` | registry targets only, 0 or 1 |
+| `TargetNValueExists` | `REG_DWORD` | registry targets only, 0 or 1 |
+| `TargetNValueType` | `REG_DWORD` | original Windows registry type |
+| `TargetNData` | `REG_BINARY` | exact original bytes, maximum 4096 |
+| `TargetNEffective` | `REG_DWORD` | firewall effective state |
+| `TargetNLocal` | `REG_DWORD` | firewall local state or not-established |
+| `CapsuleComplete` | `REG_DWORD` | exactly 1, flushed and written last |
+
+Target numbers map only to compiled action-specific targets; paths and value
+names are deliberately absent. Unknown or duplicate values, wrong types,
+excessive sizes, inconsistent absence fields, unsupported schema versions, or
+binding mismatches invalidate the capsule. Creation is exclusive. A partial
+key remains incomplete and blocks reuse of that UUID. At most 256 capsules are
+accepted; the helper refuses new capsules at the bound and does not
+automatically remove rollback authority.
+
+AutoRun targets are `NoDriveTypeAutoRun` and `NoAutorun`. PowerShell targets
+are Script Block Logging, Module Logging, and `ModuleNames\*`. Registry key
+existence, value existence, type, and raw bytes are distinct. For firewall,
+`INetFwPolicy2` establishes effective state and overall modify authority, but
+not an unambiguous per-profile local value suitable for rollback.
+`TargetNLocal` is therefore `NotEstablished`; firewall recovery remains
+indeterminate and firewall mutation remains disabled.
+
+Reading a value from the fixed registry policy paths does not prove whether
+local policy, domain policy, MDM, or an administrator owns it. Phase 2E-1
+therefore records registry policy authority as `Ambiguous`. The exact state is
+still useful as protected evidence, but it cannot authorize a future mutation
+until a separately reviewed management-authority provider resolves ownership.
+
+### Mutation-aware recovery and reconciliation
+
+The Phase 2E-1 pure recovery model distinguishes mutation not started,
+mutation may have started, mutation completed but unverified, verified
+completion, and interrupted/indeterminate. It compares a validated protected
+pre-change capsule, a fresh fixed-target observation, and the compiled intended
+post-change state. Results are `Unchanged`, `IntendedStateObserved`,
+`PartiallyChanged`, `ExternallyModified`, `Indeterminate`, or
+`ManagedOrPolicyControlled`.
+
+Every recovery assessment prohibits automatic retry and automatic rollback.
+Managed, ambiguous, inaccessible, unsupported, malformed, or firewall
+local-state-unknown evidence fails closed. A lifecycle marker alone never
+proves success. Phase 2D generic interruption recovery remains safe only while
+mutations are disabled; a future mutation backend must persist and flush a
+complete capsule before crossing `MutationMayHaveStarted` and use fresh
+reconciliation rather than retrying automatically.
+
+### Future mutation-ownership extension (not implemented)
+
+The following ownership/lifecycle slots describe the later rollback phase.
+They are not written or trusted by Phase 2E-1 and must be reconciled with the
+implemented raw exact-state schema during independent review before any writer
+or rollback executor is enabled.
+
 Private capsules never store caller-provided registry paths or value names.
 Fixed numbered slots map to the action's compiled targets.
 

@@ -199,6 +199,14 @@ only from the documented `INetFwPolicy2::LocalPolicyModifyState` result.
 - [ ] Port PowerShell logging apply and verification.
 - [ ] Port firewall COM apply and verification.
 - [ ] Write protected state before registry mutation.
+- [x] Implement exact-state capsule serialization, private ACL validation,
+  exclusive completion-last storage, and a bounded fail-closed capacity
+  (Phase 2E-1; no mutation enabled).
+- [x] Implement read-only reconciliation and mutation interruption boundaries;
+  automatic retry and automatic rollback remain prohibited.
+- [ ] Wire capture into a separately reviewed mutation state machine.
+- [ ] Establish rollback-grade local firewall state; effective COM state alone
+  is insufficient, so firewall mutation remains disabled.
 - [ ] Preserve partial and failed verification reporting.
 
 Phase 2C-2 uses a native Task Dialog in the elevated helper. Cancel, Escape,
@@ -237,6 +245,12 @@ Before the first mutation backend is implemented, crash recovery for
 `Executing` and `Verifying` must be redesigned around a durable pre-change
 capsule and exact current-state reconciliation. Phase 2D's generic Interrupted
 classification is intentionally limited to the current non-mutating helper.
+
+Phase 2E-1 supplies the capsule and reconciliation foundation without wiring it
+to apply or rollback. Raw registry types and bytes, including key and value
+absence, are preserved. Firewall effective state is captured while local state
+is explicitly not established. Recovery is classify-only. Power-loss fault
+injection and Administrator/SYSTEM tampering remain independent-review items.
 
 ### M5 — Protected rollback
 

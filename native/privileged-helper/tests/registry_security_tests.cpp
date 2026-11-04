@@ -36,6 +36,17 @@ void Check(const bool condition, const char* const description) {
     return result;
 }
 
+[[nodiscard]] bool ValidatePrivateSddl(const wchar_t* const sddl) {
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const BOOL converted = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, SDDL_REVISION_1, &descriptor, nullptr);
+    if (!converted) return false;
+    const bool result =
+        wincur::helper::ValidatePrivateRegistrySecurityDescriptor(descriptor);
+    LocalFree(descriptor);
+    return result;
+}
+
 }  // namespace
 
 int main() {
@@ -79,6 +90,14 @@ int main() {
                       L"(A;CI;KA;;;BA)(A;CI;KR;;;BU)"),
         "unexpected deny ACE is rejected"
     );
+    Check(ValidatePrivateSddl(
+              wincur::helper::kPrivateRegistrySecurityDescriptor),
+          "exact private capsule ACL is accepted");
+    Check(!ValidatePrivateSddl(wincur::helper::kPublicRegistrySecurityDescriptor),
+          "ordinary-user read access is rejected for private capsules");
+    Check(!ValidatePrivateSddl(
+              L"O:BAG:BAD:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KW;;;BU)"),
+          "ordinary-user write access is rejected for private capsules");
 
     if (failures != 0) {
         std::cerr << failures << " of " << checks << " ACL checks failed.\n";

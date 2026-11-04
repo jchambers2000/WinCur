@@ -83,6 +83,7 @@ add_library(
         src/inspection.cpp
         src/confirmation.cpp
         src/transaction.cpp
+        src/capsule.cpp
 )
 target_include_directories(wincur_helper_core PUBLIC include)
 wincur_harden_target(wincur_helper_core)
@@ -94,6 +95,9 @@ add_library(
         src/windows_confirmation.cpp
         src/windows_inspection.cpp
         src/windows_transaction_store.cpp
+        src/windows_capsule_store.cpp
+        src/windows_capsule_capture.cpp
+        src/windows_uuid.cpp
 )
 target_include_directories(wincur_helper_windows PUBLIC include)
 target_link_libraries(
@@ -226,6 +230,36 @@ if(BUILD_TESTING)
         NAME privileged_helper_lifecycle
         COMMAND WinCur.PrivilegedHelper.LifecycleTests
     )
+
+    add_executable(
+        WinCur.PrivilegedHelper.CapsuleTests
+        tests/capsule_tests.cpp
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.CapsuleTests
+        PRIVATE
+            wincur_helper_core
+    )
+    wincur_harden_executable(WinCur.PrivilegedHelper.CapsuleTests)
+    add_test(
+        NAME privileged_helper_capsules
+        COMMAND WinCur.PrivilegedHelper.CapsuleTests
+    )
+
+    add_executable(
+        WinCur.PrivilegedHelper.UuidTests
+        tests/uuid_tests.cpp
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.UuidTests
+        PRIVATE
+            wincur_helper_windows
+    )
+    wincur_harden_executable(WinCur.PrivilegedHelper.UuidTests)
+    add_test(
+        NAME privileged_helper_uuid
+        COMMAND WinCur.PrivilegedHelper.UuidTests
+    )
 endif()
 
 option(
@@ -291,6 +325,9 @@ if(WINCUR_BUILD_REGISTRY_INTEGRATION_TESTS)
         STATIC
             src/registry_security.cpp
             src/windows_transaction_store.cpp
+            src/windows_capsule_store.cpp
+            src/windows_capsule_capture.cpp
+            src/windows_uuid.cpp
     )
     target_include_directories(
         wincur_helper_windows_registry_integration
@@ -333,5 +370,29 @@ if(WINCUR_BUILD_REGISTRY_INTEGRATION_TESTS)
     )
     wincur_harden_executable(
         WinCur.PrivilegedHelper.ProductionPathAcceptanceTests
+    )
+endif()
+
+option(
+    WINCUR_BUILD_CAPSULE_INTEGRATION_TESTS
+    "Build destructive protected-capsule HKLM tests for a disposable VM"
+    OFF
+)
+if(WINCUR_BUILD_CAPSULE_INTEGRATION_TESTS)
+    if(NOT TARGET wincur_helper_windows_registry_integration)
+        message(FATAL_ERROR
+            "Capsule integration tests require WINCUR_BUILD_REGISTRY_INTEGRATION_TESTS=ON")
+    endif()
+    add_executable(
+        WinCur.PrivilegedHelper.CapsuleIntegrationTests
+        tests/capsule_integration_tests.cpp
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.CapsuleIntegrationTests
+        PRIVATE
+            wincur_helper_windows_registry_integration
+    )
+    wincur_harden_executable(
+        WinCur.PrivilegedHelper.CapsuleIntegrationTests
     )
 endif()
