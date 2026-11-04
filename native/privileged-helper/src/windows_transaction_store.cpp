@@ -19,7 +19,7 @@ namespace {
 
 constexpr wchar_t kSoftwareSubkey[] = L"SOFTWARE";
 constexpr DWORD kMaximumSecurityDescriptorBytes = 64U * 1024U;
-constexpr DWORD kMaximumRegistryValues = 14;
+constexpr DWORD kMaximumRegistryValues = 32;
 constexpr DWORD kMaximumValueNameCharacters = 64;
 constexpr DWORD kMaximumValueDataBytes =
     static_cast<DWORD>((kMaximumVerificationSummaryCharacters + 1) * sizeof(wchar_t));
@@ -386,6 +386,63 @@ StorageCreateStatus WindowsTransactionStorage::Begin(
     return StorageCreateStatus::Created;
 }
 
+StorageOpenStatus WindowsTransactionStorage::Open(
+    const std::wstring_view transaction_id
+) noexcept {
+    if (transaction_key_ != nullptr ||
+        !IsCanonicalTransactionUuid(transaction_id)) {
+        return StorageOpenStatus::Error;
+    }
+    UniqueRegistryKey transactions;
+    switch (EnsureProtectedParents(
+        KEY_ENUMERATE_SUB_KEYS | KEY_QUERY_VALUE,
+        transactions.put()
+    )) {
+        case ParentStatus::Success:
+            break;
+        case ParentStatus::Untrusted:
+            return StorageOpenStatus::Untrusted;
+        case ParentStatus::AccessDenied:
+            return StorageOpenStatus::AccessDenied;
+        case ParentStatus::Error:
+            return StorageOpenStatus::Error;
+    }
+    std::array<wchar_t, 37> identifier{};
+    std::wmemcpy(identifier.data(), transaction_id.data(), transaction_id.size());
+    HKEY key = nullptr;
+    const LSTATUS status = RegOpenKeyExW(
+        transactions.get(),
+        identifier.data(),
+        REG_OPTION_OPEN_LINK,
+        KEY_QUERY_VALUE | KEY_SET_VALUE | READ_CONTROL | KEY_WOW64_64KEY,
+        &key
+    );
+    if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND) {
+        return StorageOpenStatus::NotFound;
+    }
+    if (status == ERROR_ACCESS_DENIED || status == ERROR_PRIVILEGE_NOT_HELD) {
+        return StorageOpenStatus::AccessDenied;
+    }
+    if (status != ERROR_SUCCESS) {
+        return StorageOpenStatus::Error;
+    }
+    UniqueRegistryKey owned(key);
+    if (IsRegistryLinkOrAmbiguous(key) || !ValidateKeySecurity(key)) {
+        return StorageOpenStatus::Untrusted;
+    }
+    std::vector<TransactionValue> values;
+    if (ReadRawValues(key, values) != RegistryReadStatus::Success) {
+        return StorageOpenStatus::Error;
+    }
+    complete_written_ = std::any_of(
+        values.begin(),
+        values.end(),
+        [](const TransactionValue& value) { return value.name == L"Complete"; }
+    );
+    transaction_key_ = owned.release();
+    return StorageOpenStatus::Opened;
+}
+
 bool WindowsTransactionStorage::Write(const TransactionValue& value) noexcept {
     if (transaction_key_ == nullptr || complete_written_ || value.name.empty()) {
         return false;
@@ -445,6 +502,25 @@ bool WindowsTransactionStorage::Write(const TransactionValue& value) noexcept {
     return true;
 }
 
+bool WindowsTransactionStorage::Flush() noexcept {
+    return transaction_key_ != nullptr &&
+           RegFlushKey(transaction_key_) == ERROR_SUCCESS;
+}
+
+bool WindowsTransactionStorage::Read(
+    std::vector<TransactionValue>& values
+) noexcept {
+    if (transaction_key_ == nullptr) {
+        return false;
+    }
+    try {
+        return ReadRawValues(transaction_key_, values) ==
+               RegistryReadStatus::Success;
+    } catch (...) {
+        return false;
+    }
+}
+
 RegistryReadResult ReadTransactionResultFromRegistry(
     const std::wstring_view transaction_id
 ) noexcept {
@@ -489,13 +565,50 @@ RegistryReadResult ReadTransactionResultFromRegistry(
         if (status != RegistryReadStatus::Success) {
             return {status, std::nullopt};
         }
-        TransactionParseResult parsed = ParseTransactionResult(values, transaction_id);
+        const ReservationParseResult reservation =
+            ParseTransactionReservation(values, transaction_id);
+        if (reservation.status == ReservationParseStatus::Incomplete) {
+            return {RegistryReadStatus::Incomplete, std::nullopt};
+        }
+        if (reservation.status == ReservationParseStatus::Malformed) {
+            return {RegistryReadStatus::Malformed, std::nullopt};
+        }
+        std::vector<TransactionValue> result_values;
+        result_values.reserve(values.size());
+        for (const TransactionValue& value : values) {
+            if (value.name.starts_with(L"Reservation") ||
+                value.name == L"Lifecycle") {
+                continue;
+            }
+            result_values.push_back(value);
+        }
+        TransactionParseResult parsed =
+            ParseTransactionResult(result_values, transaction_id);
         if (parsed.status == TransactionParseStatus::Incomplete) {
             return {RegistryReadStatus::Incomplete, std::nullopt};
         }
         if (parsed.status != TransactionParseStatus::Success ||
             !parsed.result.has_value()) {
             return {RegistryReadStatus::Malformed, std::nullopt};
+        }
+        if (reservation.status == ReservationParseStatus::Success) {
+            if (!reservation.reservation.has_value() ||
+                (reservation.reservation->lifecycle !=
+                     TransactionLifecycle::Completed &&
+                 reservation.reservation->lifecycle !=
+                     TransactionLifecycle::Interrupted &&
+                 reservation.reservation->lifecycle !=
+                     TransactionLifecycle::Failed)) {
+                return {RegistryReadStatus::Malformed, std::nullopt};
+            }
+            Request request{};
+            request.operation = parsed.result->operation;
+            request.transaction_id = parsed.result->transaction_id;
+            request.action = parsed.result->action;
+            request.rollback_id = parsed.result->rollback_id;
+            if (!ReservationMatchesRequest(*reservation.reservation, request)) {
+                return {RegistryReadStatus::Malformed, std::nullopt};
+            }
         }
         return {RegistryReadStatus::Success, std::move(parsed.result)};
     } catch (...) {
@@ -648,6 +761,141 @@ bool PruneCompletedTransactionResults(
         return true;
     } catch (...) {
         return false;
+    }
+}
+
+RecoverySummary RecoverIncompleteTransactions() noexcept {
+    RecoverySummary summary{};
+    try {
+        UniqueRegistryKey root;
+        RegistryReadStatus read_status = OpenAndValidateReadKey(
+            HKEY_LOCAL_MACHINE,
+            kWinCurRegistryPath,
+            root.put()
+        );
+        if (read_status == RegistryReadStatus::NotFound) {
+            return summary;
+        }
+        if (read_status != RegistryReadStatus::Success) {
+            summary.storage_trusted = false;
+            return summary;
+        }
+        UniqueRegistryKey transactions;
+        read_status = OpenAndValidateReadKey(
+            root.get(),
+            kTransactionsSubkey,
+            transactions.put()
+        );
+        if (read_status == RegistryReadStatus::NotFound) {
+            return summary;
+        }
+        if (read_status != RegistryReadStatus::Success) {
+            summary.storage_trusted = false;
+            return summary;
+        }
+        DWORD subkey_count = 0;
+        DWORD maximum_name = 0;
+        if (RegQueryInfoKeyW(
+                transactions.get(),
+                nullptr,
+                nullptr,
+                nullptr,
+                &subkey_count,
+                &maximum_name,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr
+            ) != ERROR_SUCCESS ||
+            subkey_count > kMaximumEnumeratedTransactions || maximum_name > 36) {
+            summary.bounded = false;
+            return summary;
+        }
+        std::vector<std::wstring> identifiers;
+        identifiers.reserve(subkey_count);
+        for (DWORD index = 0; index < subkey_count; ++index) {
+            std::array<wchar_t, 37> name{};
+            DWORD name_size = static_cast<DWORD>(name.size());
+            if (RegEnumKeyExW(
+                    transactions.get(),
+                    index,
+                    name.data(),
+                    &name_size,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    nullptr
+                ) != ERROR_SUCCESS) {
+                summary.storage_trusted = false;
+                return summary;
+            }
+            const std::wstring id(name.data(), name_size);
+            if (IsCanonicalTransactionUuid(id)) {
+                identifiers.push_back(id);
+            } else {
+                ++summary.retained_partial_or_malformed;
+            }
+        }
+        for (const std::wstring& id : identifiers) {
+            ++summary.examined;
+            const RegistryReadResult completed =
+                ReadTransactionResultFromRegistry(id);
+            if (completed.status == RegistryReadStatus::Success) {
+                ++summary.completed_unchanged;
+                continue;
+            }
+            if (completed.status != RegistryReadStatus::Incomplete) {
+                ++summary.retained_partial_or_malformed;
+                continue;
+            }
+            WindowsTransactionStorage storage;
+            if (storage.Open(id) != StorageOpenStatus::Opened) {
+                summary.storage_trusted = false;
+                return summary;
+            }
+            std::vector<TransactionValue> values;
+            if (!storage.Read(values)) {
+                summary.storage_trusted = false;
+                return summary;
+            }
+            const ReservationParseResult parsed =
+                ParseTransactionReservation(values, id);
+            if (parsed.status != ReservationParseStatus::Success ||
+                !parsed.reservation.has_value()) {
+                ++summary.retained_partial_or_malformed;
+                continue;
+            }
+            Request request{};
+            request.operation = parsed.reservation->operation;
+            request.transaction_id = parsed.reservation->transaction_id;
+            request.action = parsed.reservation->action;
+            request.rollback_id = parsed.reservation->rollback_id;
+            const std::wstring timestamp = CurrentUtcTimestamp();
+            if (timestamp.empty()) {
+                summary.storage_trusted = false;
+                return summary;
+            }
+            const TransactionResult interrupted =
+                MakeInterruptedResult(*parsed.reservation, timestamp);
+            if (FinalizeReservedTransaction(
+                    storage,
+                    request,
+                    interrupted,
+                    parsed.reservation->lifecycle,
+                    TransactionLifecycle::Interrupted,
+                    timestamp
+                ) != PersistStatus::Success) {
+                summary.storage_trusted = false;
+                return summary;
+            }
+            ++summary.recovered_interrupted;
+        }
+        return summary;
+    } catch (...) {
+        summary.storage_trusted = false;
+        return summary;
     }
 }
 

@@ -83,6 +83,7 @@ public:
 void TestExplicitConfirmationAndFixedContent() {
     MockPresenter presenter;
     int revalidations = 0;
+    int accepted_callbacks = 0;
     const auto result = wincur::helper::AuthorizeMutation(
         ApplyRequest(),
         wincur::helper::ActionId::DisableAutoRun,
@@ -92,12 +93,17 @@ void TestExplicitConfirmationAndFixedContent() {
             ++revalidations;
             return wincur::helper::AuthorizationReadiness::Eligible;
         },
-        kChallenge
+        kChallenge,
+        [&accepted_callbacks] {
+            ++accepted_callbacks;
+            return true;
+        }
     );
     Check(result.status == wincur::helper::AuthorizationStatus::Confirmed,
           "explicit confirmation with successful revalidation is authorized");
-    Check(presenter.calls == 1 && revalidations == 1,
-          "confirmation and post-confirmation validation each occur once");
+    Check(presenter.calls == 1 && accepted_callbacks == 1 &&
+              revalidations == 1,
+          "confirmation, protected transition, and revalidation occur once");
     Check(presenter.observed.has_value() &&
               presenter.observed->action_name == L"Disable AutoRun" &&
               presenter.observed->proposed_change.find(L"all drive types") !=
@@ -116,6 +122,28 @@ void TestExplicitConfirmationAndFixedContent() {
     Check(confirmation_only.outcome !=
               wincur::helper::TransactionOutcome::Succeeded,
           "confirmation alone cannot serialize as successful remediation");
+}
+
+void TestProtectedTransitionFailure() {
+    MockPresenter presenter;
+    int revalidations = 0;
+    const auto result = wincur::helper::AuthorizeMutation(
+        ApplyRequest(),
+        wincur::helper::ActionId::DisableAutoRun,
+        wincur::helper::AuthorizationReadiness::Eligible,
+        presenter,
+        [&revalidations] {
+            ++revalidations;
+            return wincur::helper::AuthorizationReadiness::Eligible;
+        },
+        kChallenge,
+        [] { return false; }
+    );
+    Check(result.status ==
+              wincur::helper::AuthorizationStatus::ProtectedStateFailure,
+          "failed confirmed-state persistence stops authorization");
+    Check(revalidations == 0,
+          "failed confirmed-state persistence prevents revalidation");
 }
 
 void TestCancellationClosureTimeoutAndFailure() {
@@ -362,6 +390,7 @@ void TestRollbackBindingAndTransactionResult() {
 
 int main() {
     TestExplicitConfirmationAndFixedContent();
+    TestProtectedTransitionFailure();
     TestCancellationClosureTimeoutAndFailure();
     TestBindingMismatchAndReplay();
     TestUnsupportedRequests();

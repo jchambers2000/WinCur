@@ -211,6 +211,21 @@ if(BUILD_TESTING)
         NAME privileged_helper_confirmation
         COMMAND WinCur.PrivilegedHelper.ConfirmationTests
     )
+
+    add_executable(
+        WinCur.PrivilegedHelper.LifecycleTests
+        tests/lifecycle_tests.cpp
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.LifecycleTests
+        PRIVATE
+            wincur_helper_core
+    )
+    wincur_harden_executable(WinCur.PrivilegedHelper.LifecycleTests)
+    add_test(
+        NAME privileged_helper_lifecycle
+        COMMAND WinCur.PrivilegedHelper.LifecycleTests
+    )
 endif()
 
 option(

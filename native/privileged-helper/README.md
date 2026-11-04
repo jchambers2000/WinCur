@@ -1,10 +1,12 @@
-# WinCur native privileged helper — Phase 2C-2
+# WinCur native privileged helper — Phase 2D
 
 This directory contains the C++20/Win32 skeleton for the future
 `WinCur.PrivilegedHelper.exe`. It implements strict protocol parsing, the
 global operation mutex, protected transaction results, embedded metadata, an
 Administrator manifest, native read-only preview providers for the three
 existing hardening actions, and a helper-owned confirmation boundary.
+Phase 2D also reserves every transaction in protected HKLM state before
+inspection or confirmation and records explicit lifecycle transitions.
 
 The helper is **not connected to WinCur, not signed, and not suitable for
 distribution**. A valid `preview` request reads only compiled Windows targets
@@ -15,6 +17,13 @@ request, and repeats read-only inspection before reaching the explicit
 `Failed` / `NotImplemented` stub. `rollback` remains blocked because no
 protected capsule exists. The helper performs no Windows security configuration
 writes and creates no rollback state.
+
+Every invocation now follows an exclusive reservation. A duplicate, completed,
+incomplete, malformed, or legacy transaction UUID is rejected before any
+dialog. After the global mutex is acquired, structurally valid abandoned
+reservations are finalized as `Interrupted`; they are never resumed or retried.
+Partial or malformed reservations remain untouched and continue to block their
+UUIDs.
 
 The controlling specifications are:
 
@@ -125,8 +134,24 @@ post-confirmation read-only revalidation.
 Signing, UI integration, rollback capsules, and every security-setting mutation
 remain future milestones. Process exit alone is never an operation outcome;
 future clients must read and validate the completed protected result. A complete
-result does not imply confirmation or success. Protected transaction
-pre-reservation remains required before any mutation backend is enabled.
+result does not imply confirmation or success. Reservation is implemented;
+protected rollback capsules and mutation-aware crash reconciliation remain
+required before any mutation backend can be enabled.
+
+## Phase 2D boundary
+
+Phase 2D implements `Reserved`, `AwaitingConfirmation`, `Confirmed`,
+`Executing`, `Verifying`, `Completed`, `Interrupted`, and `Failed` states. Each
+transition validates the exact operation, action, transaction UUID, and
+rollback UUID. `ReservationComplete=1` and `Complete=1` are separate
+completion-last durability boundaries.
+
+The global mutex serializes cooperating helper processes. It is abandoned when
+a process terminates, does not survive reboot, and cannot stop an unrelated
+Administrator. Exact ACL validation and exclusive transaction-key creation are
+still required. The current recovery logic is safe because no security-setting
+writer exists; future mutation recovery must use protected pre-change capsules
+and current-state reconciliation rather than generic retry or completion.
 
 ## Disposable-VM confirmation dialog test
 
@@ -187,8 +212,9 @@ cmake --build --preset msvc-x64-release `
 The broad harness uses only the dedicated
 `HKLM\SOFTWARE\WinCurNativeHelperTests` namespace. It refuses a preexisting
 test root in either registry view, exercises weak-parent rejection, protected
-results, replay rejection, 32/64-bit view isolation, interrupted and malformed
-records, and then deletes only its fixed known keys with non-recursive APIs:
+reservation/result durability, replay rejection, 32/64-bit view isolation,
+abandoned-reservation recovery, partial-record retention, and bounded completed
+retention. It then deletes only its fixed known keys with non-recursive APIs:
 
 ```powershell
 $env:WINCUR_RUN_NATIVE_REGISTRY_INTEGRATION = `
@@ -199,7 +225,8 @@ $env:WINCUR_RUN_NATIVE_REGISTRY_INTEGRATION = `
 The minimal production-path acceptance harness is separate. It refuses any
 preexisting `HKLM\SOFTWARE\WinCur` root in either registry view, uses an
 exclusive protected-root create to close the absence-check race, performs one
-protected write/read, and deliberately never deletes the resulting state:
+protected reserve/transition/finalize/read cycle, and deliberately never deletes
+the resulting state:
 
 ```powershell
 $env:WINCUR_RUN_PRODUCTION_PATH_ACCEPTANCE = `
@@ -212,7 +239,8 @@ Revert the VM after every run, including failures. Neither executable has a
 `requireAdministrator` manifest; it intentionally refuses rather than prompting
 when launched from a non-elevated console.
 
-Completion-last now includes a registry flush before and after the completion
-marker. Abrupt power-loss behavior, stale-incomplete recovery, retention under
-crash flooding, and concurrent Administrator interference still require
-disposable-VM fault injection and independent security review.
+Both reservation-complete and result-complete markers have a registry flush
+before and after their publication. Abrupt power-loss durability, termination
+at every individual API boundary, crash flooding beyond the enumeration bound,
+and concurrent Administrator interference still require disposable-VM fault
+injection and independent security review.

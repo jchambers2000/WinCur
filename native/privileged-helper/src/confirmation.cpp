@@ -209,7 +209,8 @@ AuthorizationResult AuthorizeMutation(
     const AuthorizationReadiness initial_readiness,
     ConfirmationPresenter& presenter,
     const RevalidationFunction& revalidate,
-    const std::uint64_t challenge
+    const std::uint64_t challenge,
+    const ConfirmationAcceptedFunction& on_confirmed
 ) noexcept {
     try {
         const auto prompt = MakeConfirmationPrompt(request, resolved_action);
@@ -286,6 +287,14 @@ AuthorizationResult AuthorizeMutation(
                 );
         }
 
+        if (on_confirmed && !on_confirmed()) {
+            return Result(
+                AuthorizationStatus::ProtectedStateFailure,
+                L"ConfirmationStatePersistenceFailed",
+                L"WinCur could not persist the confirmed transaction state.",
+                L"The operation was stopped before any security-setting change."
+            );
+        }
         const AuthorizationReadiness current = revalidate();
         if (current != AuthorizationReadiness::Eligible) {
             return ReadinessResult(current, true);

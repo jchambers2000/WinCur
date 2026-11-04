@@ -73,6 +73,7 @@ enum class AuthorizationStatus {
     Cancelled,
     TimedOut,
     UiFailure,
+    ProtectedStateFailure,
     UnsupportedRequest,
     BindingMismatch,
     Replayed,
@@ -90,6 +91,7 @@ struct AuthorizationResult final {
 };
 
 using RevalidationFunction = std::function<AuthorizationReadiness()>;
+using ConfirmationAcceptedFunction = std::function<bool()>;
 
 [[nodiscard]] AuthorizationReadiness ReadinessFromInspection(
     const InspectionResult& inspection
@@ -124,7 +126,8 @@ private:
     AuthorizationReadiness initial_readiness,
     ConfirmationPresenter& presenter,
     const RevalidationFunction& revalidate,
-    std::uint64_t challenge
+    std::uint64_t challenge,
+    const ConfirmationAcceptedFunction& on_confirmed = {}
 ) noexcept;
 
 [[nodiscard]] TransactionResult MakeAuthorizationTransactionResult(

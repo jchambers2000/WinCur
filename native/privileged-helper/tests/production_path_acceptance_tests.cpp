@@ -140,9 +140,27 @@ int wmain() {
         wincur::helper::CurrentUtcTimestamp()
     );
     wincur::helper::WindowsTransactionStorage storage;
-    if (wincur::helper::PersistTransactionResult(storage, record) !=
-        wincur::helper::PersistStatus::Success) {
-        std::wcerr << L"Production-path protected write failed.\n";
+    const std::wstring timestamp = wincur::helper::CurrentUtcTimestamp();
+    if (wincur::helper::ReserveTransaction(
+            storage,
+            wincur::helper::MakeTransactionReservation(request, timestamp)
+        ) != wincur::helper::ReservationStatus::Success ||
+        wincur::helper::TransitionTransaction(
+            storage,
+            request,
+            wincur::helper::TransactionLifecycle::Reserved,
+            wincur::helper::TransactionLifecycle::Executing,
+            timestamp
+        ) != wincur::helper::TransitionStatus::Success ||
+        wincur::helper::FinalizeReservedTransaction(
+            storage,
+            request,
+            record,
+            wincur::helper::TransactionLifecycle::Executing,
+            wincur::helper::TransactionLifecycle::Failed,
+            timestamp
+        ) != wincur::helper::PersistStatus::Success) {
+        std::wcerr << L"Production-path protected reservation write failed.\n";
         return EXIT_FAILURE;
     }
     const auto read =

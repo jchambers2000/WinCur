@@ -152,6 +152,28 @@ constexpr std::size_t kTimestampCharacters = 20;
     return std::nullopt;
 }
 
+[[nodiscard]] std::optional<TransactionLifecycle> ParseLifecycleName(
+    const std::wstring_view value
+) noexcept {
+    constexpr std::array<std::pair<std::wstring_view, TransactionLifecycle>, 8>
+        values{{
+            {L"Reserved", TransactionLifecycle::Reserved},
+            {L"AwaitingConfirmation", TransactionLifecycle::AwaitingConfirmation},
+            {L"Confirmed", TransactionLifecycle::Confirmed},
+            {L"Executing", TransactionLifecycle::Executing},
+            {L"Verifying", TransactionLifecycle::Verifying},
+            {L"Completed", TransactionLifecycle::Completed},
+            {L"Interrupted", TransactionLifecycle::Interrupted},
+            {L"Failed", TransactionLifecycle::Failed},
+        }};
+    for (const auto& [name, lifecycle] : values) {
+        if (name == value) {
+            return lifecycle;
+        }
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] const TransactionValue* FindValue(
     const std::map<std::wstring, const TransactionValue*>& values,
     const wchar_t* const name
@@ -248,6 +270,431 @@ std::wstring_view OutcomeName(const TransactionOutcome outcome) noexcept {
             return L"Interrupted";
     }
     return {};
+}
+
+std::wstring_view LifecycleName(
+    const TransactionLifecycle lifecycle
+) noexcept {
+    switch (lifecycle) {
+        case TransactionLifecycle::Reserved:
+            return L"Reserved";
+        case TransactionLifecycle::AwaitingConfirmation:
+            return L"AwaitingConfirmation";
+        case TransactionLifecycle::Confirmed:
+            return L"Confirmed";
+        case TransactionLifecycle::Executing:
+            return L"Executing";
+        case TransactionLifecycle::Verifying:
+            return L"Verifying";
+        case TransactionLifecycle::Completed:
+            return L"Completed";
+        case TransactionLifecycle::Interrupted:
+            return L"Interrupted";
+        case TransactionLifecycle::Failed:
+            return L"Failed";
+    }
+    return {};
+}
+
+bool IsAllowedLifecycleTransition(
+    const TransactionLifecycle current,
+    const TransactionLifecycle next
+) noexcept {
+    if (next == TransactionLifecycle::Interrupted &&
+        current != TransactionLifecycle::Interrupted) {
+        return true;
+    }
+    switch (current) {
+        case TransactionLifecycle::Reserved:
+            return next == TransactionLifecycle::AwaitingConfirmation ||
+                   next == TransactionLifecycle::Executing ||
+                   next == TransactionLifecycle::Completed ||
+                   next == TransactionLifecycle::Failed;
+        case TransactionLifecycle::AwaitingConfirmation:
+            return next == TransactionLifecycle::Confirmed ||
+                   next == TransactionLifecycle::Completed ||
+                   next == TransactionLifecycle::Failed;
+        case TransactionLifecycle::Confirmed:
+            return next == TransactionLifecycle::Executing ||
+                   next == TransactionLifecycle::Completed ||
+                   next == TransactionLifecycle::Failed;
+        case TransactionLifecycle::Executing:
+            return next == TransactionLifecycle::Verifying ||
+                   next == TransactionLifecycle::Completed ||
+                   next == TransactionLifecycle::Failed;
+        case TransactionLifecycle::Verifying:
+            return next == TransactionLifecycle::Completed ||
+                   next == TransactionLifecycle::Failed;
+        case TransactionLifecycle::Completed:
+        case TransactionLifecycle::Interrupted:
+        case TransactionLifecycle::Failed:
+            return false;
+    }
+    return false;
+}
+
+TransactionReservation MakeTransactionReservation(
+    const Request& request,
+    std::wstring timestamp_utc
+) {
+    TransactionReservation reservation{};
+    reservation.transaction_id = request.transaction_id;
+    reservation.operation = request.operation;
+    reservation.action = request.action;
+    reservation.rollback_id = request.rollback_id;
+    reservation.helper_version = std::wstring(kHelperVersion);
+    reservation.build_id = std::wstring(kHelperBuildId);
+    reservation.created_utc = timestamp_utc;
+    reservation.updated_utc = std::move(timestamp_utc);
+    return reservation;
+}
+
+std::optional<std::vector<TransactionValue>>
+SerializeTransactionReservation(const TransactionReservation& reservation) {
+    if (reservation.schema_version != kTransactionSchemaVersion ||
+        reservation.protocol_version != kProtocolVersion ||
+        !IsCanonicalTransactionUuid(reservation.transaction_id) ||
+        OperationName(reservation.operation).empty() ||
+        (reservation.operation != Operation::Rollback &&
+         !reservation.action.has_value()) ||
+        (reservation.action.has_value() &&
+         ActionName(*reservation.action).empty()) ||
+        (reservation.operation == Operation::Rollback &&
+         (!reservation.rollback_id.has_value() ||
+          reservation.action.has_value())) ||
+        (reservation.operation != Operation::Rollback &&
+         reservation.rollback_id.has_value()) ||
+        (reservation.rollback_id.has_value() &&
+         !IsCanonicalTransactionUuid(*reservation.rollback_id)) ||
+        !IsDottedVersion(reservation.helper_version) ||
+        !IsAsciiIdentifier(reservation.build_id, kMaximumIdentifierCharacters) ||
+        !IsUtcTimestamp(reservation.created_utc) ||
+        !IsUtcTimestamp(reservation.updated_utc) ||
+        LifecycleName(reservation.lifecycle).empty()) {
+        return std::nullopt;
+    }
+
+    std::vector<TransactionValue> values;
+    values.reserve(12);
+    values.push_back(DwordValue(
+        L"ReservationSchemaVersion",
+        reservation.schema_version
+    ));
+    values.push_back(DwordValue(
+        L"ReservationProtocolVersion",
+        reservation.protocol_version
+    ));
+    values.push_back(StringValue(
+        L"ReservationTransactionId",
+        reservation.transaction_id
+    ));
+    values.push_back(StringValue(
+        L"ReservationOperation",
+        std::wstring(OperationName(reservation.operation))
+    ));
+    if (reservation.action.has_value()) {
+        values.push_back(StringValue(
+            L"ReservationActionId",
+            std::wstring(ActionName(*reservation.action))
+        ));
+    }
+    if (reservation.rollback_id.has_value()) {
+        values.push_back(StringValue(
+            L"ReservationRollbackId",
+            *reservation.rollback_id
+        ));
+    }
+    values.push_back(StringValue(
+        L"ReservationHelperVersion",
+        reservation.helper_version
+    ));
+    values.push_back(StringValue(L"ReservationBuildId", reservation.build_id));
+    values.push_back(StringValue(
+        L"ReservationCreatedUtc",
+        reservation.created_utc
+    ));
+    values.push_back(StringValue(
+        L"ReservationUpdatedUtc",
+        reservation.updated_utc
+    ));
+    values.push_back(StringValue(
+        L"Lifecycle",
+        std::wstring(LifecycleName(reservation.lifecycle))
+    ));
+    values.push_back(DwordValue(L"ReservationComplete", 1));
+    return values;
+}
+
+ReservationParseResult ParseTransactionReservation(
+    const std::span<const TransactionValue> values,
+    const std::wstring_view expected_transaction_id
+) {
+    std::map<std::wstring, const TransactionValue*> by_name;
+    bool has_reservation_value = false;
+    std::size_t reservation_value_count = 0;
+    constexpr std::array<std::wstring_view, 12> allowed_names{
+        L"ReservationSchemaVersion", L"ReservationProtocolVersion",
+        L"ReservationTransactionId", L"ReservationOperation",
+        L"ReservationActionId", L"ReservationRollbackId",
+        L"ReservationHelperVersion", L"ReservationBuildId",
+        L"ReservationCreatedUtc", L"ReservationUpdatedUtc", L"Lifecycle",
+        L"ReservationComplete",
+    };
+    for (const TransactionValue& value : values) {
+        const bool reservation_name =
+            std::find(allowed_names.begin(), allowed_names.end(), value.name) !=
+            allowed_names.end();
+        const bool reservation_prefix =
+            value.name.starts_with(L"Reservation") || value.name == L"Lifecycle";
+        if (!reservation_name) {
+            if (reservation_prefix) {
+                return {};
+            }
+            continue;
+        }
+        has_reservation_value = true;
+        ++reservation_value_count;
+        if (!by_name.emplace(value.name, &value).second) {
+            return {};
+        }
+    }
+    if (!has_reservation_value) {
+        return {ReservationParseStatus::Absent, std::nullopt};
+    }
+    const TransactionValue* const complete =
+        FindValue(by_name, L"ReservationComplete");
+    if (complete == nullptr) {
+        return {ReservationParseStatus::Incomplete, std::nullopt};
+    }
+    if (complete->type != TransactionValueType::Dword ||
+        complete->dword_value != 1) {
+        return {};
+    }
+
+    TransactionReservation reservation{};
+    std::wstring operation_name;
+    std::wstring lifecycle_name;
+    if (!ReadDword(
+            by_name,
+            L"ReservationSchemaVersion",
+            reservation.schema_version
+        ) ||
+        !ReadDword(
+            by_name,
+            L"ReservationProtocolVersion",
+            reservation.protocol_version
+        ) ||
+        !ReadString(
+            by_name,
+            L"ReservationTransactionId",
+            reservation.transaction_id
+        ) ||
+        !ReadString(by_name, L"ReservationOperation", operation_name) ||
+        !ReadString(
+            by_name,
+            L"ReservationHelperVersion",
+            reservation.helper_version
+        ) ||
+        !ReadString(by_name, L"ReservationBuildId", reservation.build_id) ||
+        !ReadString(
+            by_name,
+            L"ReservationCreatedUtc",
+            reservation.created_utc
+        ) ||
+        !ReadString(
+            by_name,
+            L"ReservationUpdatedUtc",
+            reservation.updated_utc
+        ) ||
+        !ReadString(by_name, L"Lifecycle", lifecycle_name)) {
+        return {};
+    }
+    const auto operation = ParseOperationName(operation_name);
+    const auto lifecycle = ParseLifecycleName(lifecycle_name);
+    if (!operation.has_value() || !lifecycle.has_value()) {
+        return {};
+    }
+    reservation.operation = *operation;
+    reservation.lifecycle = *lifecycle;
+    if (const TransactionValue* const action =
+            FindValue(by_name, L"ReservationActionId")) {
+        if (action->type != TransactionValueType::String) {
+            return {};
+        }
+        reservation.action = ParseActionName(action->string_value);
+        if (!reservation.action.has_value()) {
+            return {};
+        }
+    }
+    if (const TransactionValue* const rollback =
+            FindValue(by_name, L"ReservationRollbackId")) {
+        if (rollback->type != TransactionValueType::String) {
+            return {};
+        }
+        reservation.rollback_id = rollback->string_value;
+    }
+    const auto canonical = SerializeTransactionReservation(reservation);
+    if (!canonical.has_value() ||
+        reservation.transaction_id != expected_transaction_id ||
+        canonical->size() != reservation_value_count) {
+        return {};
+    }
+    return {ReservationParseStatus::Success, std::move(reservation)};
+}
+
+bool ReservationMatchesRequest(
+    const TransactionReservation& reservation,
+    const Request& request
+) noexcept {
+    return reservation.transaction_id == request.transaction_id &&
+           reservation.operation == request.operation &&
+           reservation.action == request.action &&
+           reservation.rollback_id == request.rollback_id;
+}
+
+ReservationStatus ReserveTransaction(
+    TransactionStorage& storage,
+    const TransactionReservation& reservation
+) {
+    const auto values = SerializeTransactionReservation(reservation);
+    if (!values.has_value()) {
+        return ReservationStatus::InvalidRecord;
+    }
+    switch (storage.Begin(reservation.transaction_id)) {
+        case StorageCreateStatus::Created:
+            break;
+        case StorageCreateStatus::Duplicate:
+            return ReservationStatus::Duplicate;
+        case StorageCreateStatus::Untrusted:
+            return ReservationStatus::Untrusted;
+        case StorageCreateStatus::AccessDenied:
+            return ReservationStatus::AccessDenied;
+        case StorageCreateStatus::Error:
+            return ReservationStatus::Error;
+    }
+    for (std::size_t index = 0; index + 1 < values->size(); ++index) {
+        if (!storage.Write((*values)[index])) {
+            return ReservationStatus::PartialWrite;
+        }
+    }
+    if (!storage.Flush() || !storage.Write(values->back()) || !storage.Flush()) {
+        return ReservationStatus::PartialWrite;
+    }
+    return ReservationStatus::Success;
+}
+
+TransitionStatus TransitionTransaction(
+    TransactionStorage& storage,
+    const Request& request,
+    const TransactionLifecycle expected,
+    const TransactionLifecycle next,
+    std::wstring updated_utc
+) {
+    if (!IsUtcTimestamp(updated_utc) ||
+        !IsAllowedLifecycleTransition(expected, next)) {
+        return TransitionStatus::InvalidTransition;
+    }
+    std::vector<TransactionValue> values;
+    if (!storage.Read(values)) {
+        return TransitionStatus::Error;
+    }
+    const auto parsed = ParseTransactionReservation(values, request.transaction_id);
+    if (parsed.status != ReservationParseStatus::Success ||
+        !parsed.reservation.has_value()) {
+        return TransitionStatus::MalformedState;
+    }
+    if (!ReservationMatchesRequest(*parsed.reservation, request)) {
+        return TransitionStatus::BindingMismatch;
+    }
+    if (parsed.reservation->lifecycle != expected) {
+        return TransitionStatus::InvalidTransition;
+    }
+    if (!storage.Write(StringValue(
+            L"ReservationUpdatedUtc",
+            std::move(updated_utc)
+        )) ||
+        !storage.Write(StringValue(L"Lifecycle", std::wstring(LifecycleName(next)))) ||
+        !storage.Flush()) {
+        return TransitionStatus::PartialWrite;
+    }
+    return TransitionStatus::Success;
+}
+
+PersistStatus FinalizeReservedTransaction(
+    TransactionStorage& storage,
+    const Request& request,
+    const TransactionResult& result,
+    const TransactionLifecycle expected,
+    const TransactionLifecycle terminal,
+    std::wstring updated_utc
+) {
+    if (terminal != TransactionLifecycle::Completed &&
+        terminal != TransactionLifecycle::Interrupted &&
+        terminal != TransactionLifecycle::Failed) {
+        return PersistStatus::InvalidRecord;
+    }
+    std::vector<TransactionValue> current_values;
+    if (!storage.Read(current_values)) {
+        return PersistStatus::Error;
+    }
+    const auto reservation =
+        ParseTransactionReservation(current_values, request.transaction_id);
+    if (reservation.status != ReservationParseStatus::Success ||
+        !reservation.reservation.has_value() ||
+        !ReservationMatchesRequest(*reservation.reservation, request) ||
+        reservation.reservation->lifecycle != expected ||
+        (!IsAllowedLifecycleTransition(expected, terminal) &&
+         !(expected == TransactionLifecycle::Interrupted &&
+           terminal == TransactionLifecycle::Interrupted)) ||
+        !IsUtcTimestamp(updated_utc) ||
+        result.transaction_id != request.transaction_id ||
+        result.operation != request.operation || result.action != request.action ||
+        result.rollback_id != request.rollback_id) {
+        return PersistStatus::InvalidRecord;
+    }
+    const auto result_values = SerializeTransactionResult(result);
+    if (!result_values.has_value()) {
+        return PersistStatus::InvalidRecord;
+    }
+    for (std::size_t index = 0; index + 1 < result_values->size(); ++index) {
+        if (!storage.Write((*result_values)[index])) {
+            return PersistStatus::PartialWrite;
+        }
+    }
+    if (!storage.Write(StringValue(
+            L"ReservationUpdatedUtc",
+            std::move(updated_utc)
+        )) ||
+        !storage.Write(StringValue(
+            L"Lifecycle",
+            std::wstring(LifecycleName(terminal))
+        )) ||
+        !storage.Flush() || !storage.Write(result_values->back()) ||
+        !storage.Flush()) {
+        return PersistStatus::PartialWrite;
+    }
+    return PersistStatus::Success;
+}
+
+TransactionResult MakeInterruptedResult(
+    const TransactionReservation& reservation,
+    std::wstring timestamp_utc
+) {
+    TransactionResult result{};
+    result.transaction_id = reservation.transaction_id;
+    result.operation = reservation.operation;
+    result.action = reservation.action;
+    result.rollback_id = reservation.rollback_id;
+    result.outcome = TransactionOutcome::Interrupted;
+    result.message_code = L"RecoveredInterrupted";
+    result.display_message =
+        L"A prior helper operation ended before a complete result was recorded.";
+    result.verification_summary =
+        L"The operation was not retried. No success is inferred from the incomplete transaction.";
+    result.helper_version = std::wstring(kHelperVersion);
+    result.build_id = std::wstring(kHelperBuildId);
+    result.timestamp_utc = std::move(timestamp_utc);
+    return result;
 }
 
 TransactionResult MakeNotImplementedResult(

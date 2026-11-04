@@ -5,6 +5,9 @@ M1 and M2 are implemented as a development foundation. Phase 2C-1 implemented
 fixed-target read-only inspection. Phase 2C-2 adds helper-owned confirmation,
 one-use binding, cancellation handling, and post-confirmation revalidation
 without enabling a security-configuration write.
+Phase 2D adds protected pre-operation reservation, explicit lifecycle
+transitions, and no-retry interruption recovery. Security-setting mutation and
+rollback execution remain absent.
 
 - [Architecture decision record](0001-portable-native-privileged-helper.md)
 - [Protocol version 1](privileged-helper-protocol-v1.md)
@@ -187,8 +190,11 @@ only from the documented `INetFwPolicy2::LocalPolicyModifyState` result.
 - [x] Bind a one-use receipt to operation, action, transaction, rollback ID,
   and an unpredictable challenge.
 - [x] Revalidate read-only evidence after apply confirmation.
-- [ ] Reserve the protected transaction UUID before displaying a mutation
-  confirmation and reconcile interrupted reservations.
+- [x] Reserve the protected transaction UUID before inspection or confirmation.
+- [x] Reject every preexisting UUID before confirmation, regardless of whether
+  its record is complete, incomplete, malformed, or legacy.
+- [x] Implement exact-binding lifecycle transitions and no-retry interruption
+  recovery while mutation backends remain disabled.
 - [ ] Port AutoRun apply and verification.
 - [ ] Port PowerShell logging apply and verification.
 - [ ] Port firewall COM apply and verification.
@@ -206,6 +212,31 @@ Rollback confirmation cannot be offered by the executable until a protected
 capsule resolves the action and proves exact owned state. Rollback therefore
 returns `BlockedPrecondition` in this phase. Unit tests exercise the future
 binding path without creating or trusting rollback state.
+
+### Phase 2D — transaction reservation and interruption
+
+The helper exclusively creates the protected transaction key and durably writes
+its exact binding before reading an action target or displaying confirmation.
+Reservation failure, duplicate UUID, weak ACL, malformed parent state, or a
+partial reservation stops the request. An abandoned but structurally valid
+reservation is converted to a completed `Interrupted` record only after a later
+helper acquires the global mutex. It is never resumed or retried.
+
+The ordinary-user boundary is enforced by the exact protected DACL and by
+validating it on every open. Windows registry ACLs do not authenticate a
+specific executable against another Administrator. Administrator/SYSTEM
+tampering remains out of scope and is an explicit limitation, not a claimed
+helper-only guarantee.
+
+Recovery enumerates at most 4,096 fixed-namespace transaction children. Valid
+interrupted records are eligible for the existing completed-result count
+retention. Partial, malformed, noncanonical, and untrusted records are retained;
+they can cause bounded denial of service but cannot authorize or retry a change.
+
+Before the first mutation backend is implemented, crash recovery for
+`Executing` and `Verifying` must be redesigned around a durable pre-change
+capsule and exact current-state reconciliation. Phase 2D's generic Interrupted
+classification is intentionally limited to the current non-mutating helper.
 
 ### M5 — Protected rollback
 
@@ -255,6 +286,10 @@ binding path without creating or trusting rollback state.
 - Every illegal transition, extra/missing value, wrong type, overlong string,
   and unsupported schema.
 - Complete marker written last.
+- Reservation marker written last and flushed before action-specific work.
+- Exact lifecycle transitions and immutable binding validation.
+- Valid abandoned reservations become Interrupted without retry.
+- Partial/malformed reservations remain retained and non-authoritative.
 - Sanitization and length bounds.
 - Minimum version increases but never decreases.
 
@@ -322,8 +357,9 @@ snapshot revert.
 - UAC denial, cancellation, helper cancellation, crash, hang, and UI exit never
   claim success.
 - Confirmation receipts are process-local and one-use. Cross-process replay is
-  ultimately prevented by protected transaction reservation; that reservation
-  ordering remains mandatory before a mutation backend can be enabled.
+  prevented by exclusive protected transaction reservation.
+- Global mutex abandonment permits recovery but does not itself authenticate
+  helper identity or survive process termination.
 
 ### Action compatibility
 

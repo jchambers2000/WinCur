@@ -1,6 +1,6 @@
 # ADR-0001: Portable native privileged helper
 
-- Status: Accepted; M1-M3 foundation and M4 confirmation boundary implemented
+- Status: Accepted; M1-M3 and Phase 2D transaction foundation implemented
 - Date: 2026-11-01
 - Application version: WinCur 1.0.0 development candidate
 - Scoring policy: 2.1 (unchanged)
@@ -180,7 +180,11 @@ UAC plus the helper confirmation because the UI is user-writable.
   read-only inspection after confirmation. No mutation backend or rollback
   capsule exists. Before mutation is implemented, the transaction UUID must be
   reserved in protected state before the dialog so a second helper process
-  cannot reuse a completed or in-flight identifier.
+  cannot reuse a completed or in-flight identifier. Phase 2D implements that
+  reservation and fail-closed interruption recovery, but no mutation backend.
+- Registry ACLs prevent ordinary users from transitioning protected state. They
+  cannot distinguish the authentic helper from another Administrator; existing
+  Administrators remain outside the stated attacker boundary.
 
 ## References
 

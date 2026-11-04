@@ -264,16 +264,34 @@ int wmain() {
     request.operation = wincur::helper::Operation::Preview;
     request.transaction_id = kTransaction;
     request.action = wincur::helper::ActionId::DisableAutoRun;
+    const std::wstring timestamp = wincur::helper::CurrentUtcTimestamp();
     const wincur::helper::TransactionResult record =
         wincur::helper::MakeNotImplementedResult(
             request,
-            wincur::helper::CurrentUtcTimestamp()
+            timestamp
         );
 
     wincur::helper::WindowsTransactionStorage storage;
-    if (wincur::helper::PersistTransactionResult(storage, record) !=
-        wincur::helper::PersistStatus::Success) {
-        std::wcerr << L"Protected transaction write failed.\n";
+    if (wincur::helper::ReserveTransaction(
+            storage,
+            wincur::helper::MakeTransactionReservation(request, timestamp)
+        ) != wincur::helper::ReservationStatus::Success ||
+        wincur::helper::TransitionTransaction(
+            storage,
+            request,
+            wincur::helper::TransactionLifecycle::Reserved,
+            wincur::helper::TransactionLifecycle::Executing,
+            timestamp
+        ) != wincur::helper::TransitionStatus::Success ||
+        wincur::helper::FinalizeReservedTransaction(
+            storage,
+            request,
+            record,
+            wincur::helper::TransactionLifecycle::Executing,
+            wincur::helper::TransactionLifecycle::Failed,
+            timestamp
+        ) != wincur::helper::PersistStatus::Success) {
+        std::wcerr << L"Protected reservation/lifecycle write failed.\n";
         return EXIT_FAILURE;
     }
     const auto read =
@@ -290,22 +308,32 @@ int wmain() {
     }
 
     wincur::helper::WindowsTransactionStorage replay_storage;
-    if (wincur::helper::PersistTransactionResult(replay_storage, record) !=
-        wincur::helper::PersistStatus::Duplicate) {
+    if (wincur::helper::ReserveTransaction(
+            replay_storage,
+            wincur::helper::MakeTransactionReservation(request, timestamp)
+        ) != wincur::helper::ReservationStatus::Duplicate) {
         std::wcerr << L"Duplicate transaction UUID was not rejected.\n";
         return EXIT_FAILURE;
     }
 
     {
         wincur::helper::WindowsTransactionStorage interrupted;
-        if (interrupted.Begin(kInterruptedTransaction) !=
-            wincur::helper::StorageCreateStatus::Created ||
-            !interrupted.Write({
-                L"SchemaVersion",
-                wincur::helper::TransactionValueType::Dword,
-                wincur::helper::kTransactionSchemaVersion,
-                {},
-            })) {
+        auto interrupted_request = request;
+        interrupted_request.transaction_id = kInterruptedTransaction;
+        if (wincur::helper::ReserveTransaction(
+                interrupted,
+                wincur::helper::MakeTransactionReservation(
+                    interrupted_request,
+                    timestamp
+                )
+            ) != wincur::helper::ReservationStatus::Success ||
+            wincur::helper::TransitionTransaction(
+                interrupted,
+                interrupted_request,
+                wincur::helper::TransactionLifecycle::Reserved,
+                wincur::helper::TransactionLifecycle::Executing,
+                timestamp
+            ) != wincur::helper::TransitionStatus::Success) {
             std::wcerr << L"Could not create interrupted transaction fixture.\n";
             return EXIT_FAILURE;
         }
@@ -321,18 +349,73 @@ int wmain() {
         if (malformed.Begin(kMalformedTransaction) !=
             wincur::helper::StorageCreateStatus::Created ||
             !malformed.Write({
-                L"Complete",
+                L"ReservationSchemaVersion",
                 wincur::helper::TransactionValueType::Dword,
-                1,
+                wincur::helper::kTransactionSchemaVersion,
                 {},
             })) {
-            std::wcerr << L"Could not create malformed transaction fixture.\n";
+            std::wcerr << L"Could not create partial reservation fixture.\n";
             return EXIT_FAILURE;
         }
     }
     if (wincur::helper::ReadTransactionResultFromRegistry(kMalformedTransaction)
-            .status != wincur::helper::RegistryReadStatus::Malformed) {
-        std::wcerr << L"Malformed completed transaction was not rejected.\n";
+            .status != wincur::helper::RegistryReadStatus::Incomplete) {
+        std::wcerr << L"Partial reservation was not classified incomplete.\n";
+        return EXIT_FAILURE;
+    }
+
+    const wincur::helper::RecoverySummary recovery =
+        wincur::helper::RecoverIncompleteTransactions();
+    if (!recovery.storage_trusted || !recovery.bounded ||
+        recovery.recovered_interrupted != 1 ||
+        recovery.retained_partial_or_malformed == 0) {
+        std::wcerr << L"Interrupted recovery classification failed.\n";
+        return EXIT_FAILURE;
+    }
+    const auto recovered = wincur::helper::ReadTransactionResultFromRegistry(
+        kInterruptedTransaction
+    );
+    if (recovered.status != wincur::helper::RegistryReadStatus::Success ||
+        !recovered.result.has_value() ||
+        recovered.result->outcome !=
+            wincur::helper::TransactionOutcome::Interrupted) {
+        std::wcerr << L"Abandoned reservation was not terminalized Interrupted.\n";
+        return EXIT_FAILURE;
+    }
+    wincur::helper::WindowsTransactionStorage retained_replay;
+    auto retained_request = request;
+    retained_request.transaction_id = kMalformedTransaction;
+    if (wincur::helper::ReserveTransaction(
+            retained_replay,
+            wincur::helper::MakeTransactionReservation(
+                retained_request,
+                timestamp
+            )
+        ) != wincur::helper::ReservationStatus::Duplicate) {
+        std::wcerr << L"Partial reservation UUID was not retained fail-closed.\n";
+        return EXIT_FAILURE;
+    }
+
+    if (!wincur::helper::PruneCompletedTransactionResults(1)) {
+        std::wcerr << L"Bounded completed-result retention failed.\n";
+        return EXIT_FAILURE;
+    }
+    const auto retained_first =
+        wincur::helper::ReadTransactionResultFromRegistry(kTransaction);
+    const auto retained_interrupted =
+        wincur::helper::ReadTransactionResultFromRegistry(kInterruptedTransaction);
+    const int completed_remaining =
+        (retained_first.status == wincur::helper::RegistryReadStatus::Success
+             ? 1
+             : 0) +
+        (retained_interrupted.status ==
+                 wincur::helper::RegistryReadStatus::Success
+             ? 1
+             : 0);
+    if (completed_remaining != 1 ||
+        wincur::helper::ReadTransactionResultFromRegistry(kMalformedTransaction)
+                .status != wincur::helper::RegistryReadStatus::Incomplete) {
+        std::wcerr << L"Retention removed the wrong record class.\n";
         return EXIT_FAILURE;
     }
 
@@ -342,7 +425,8 @@ int wmain() {
     }
 
     std::wcout
-        << L"Dedicated-namespace ACL, replay, registry-view isolation, "
-           L"interrupted-write, malformed-record, and safe cleanup tests passed.\n";
+        << L"Dedicated-namespace ACL, reservation replay, registry-view "
+           L"isolation, interrupted recovery, partial-record retention, and "
+           L"safe cleanup tests passed.\n";
     return EXIT_SUCCESS;
 }

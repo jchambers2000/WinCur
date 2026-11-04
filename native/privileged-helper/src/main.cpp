@@ -25,12 +25,24 @@ using wincur::helper::ExitCode;
     return static_cast<int>(code);
 }
 
-[[nodiscard]] ExitCode PersistResult(
+[[nodiscard]] ExitCode FinalizeResult(
+    wincur::helper::WindowsTransactionStorage& storage,
+    const wincur::helper::Request& request,
     const wincur::helper::TransactionResult& result,
+    const wincur::helper::TransactionLifecycle expected,
+    const wincur::helper::TransactionLifecycle terminal,
     const ExitCode success_code
 ) noexcept {
-    wincur::helper::WindowsTransactionStorage storage;
-    if (wincur::helper::PersistTransactionResult(storage, result) !=
+    const std::wstring timestamp = wincur::helper::CurrentUtcTimestamp();
+    if (timestamp.empty() ||
+        wincur::helper::FinalizeReservedTransaction(
+            storage,
+            request,
+            result,
+            expected,
+            terminal,
+            timestamp
+        ) !=
         wincur::helper::PersistStatus::Success) {
         return ExitCode::ProtectedStateError;
     }
@@ -53,6 +65,8 @@ using wincur::helper::ExitCode;
             return ExitCode::Blocked;
         case AuthorizationStatus::Confirmed:
             return ExitCode::Success;
+        case AuthorizationStatus::ProtectedStateFailure:
+            return ExitCode::ProtectedStateError;
         default:
             return ExitCode::Failed;
     }
@@ -122,8 +136,43 @@ int WINAPI wWinMain(
                 break;
         }
 
+        const wincur::helper::RecoverySummary recovery =
+            wincur::helper::RecoverIncompleteTransactions();
+        if (!recovery.storage_trusted || !recovery.bounded) {
+            return ToExitCode(ExitCode::ProtectedStateError);
+        }
+        static_cast<void>(wincur::helper::PruneCompletedTransactionResults());
+
+        const std::wstring reservation_timestamp =
+            wincur::helper::CurrentUtcTimestamp();
+        if (reservation_timestamp.empty()) {
+            return ToExitCode(ExitCode::InternalError);
+        }
+        wincur::helper::WindowsTransactionStorage storage;
+        const wincur::helper::TransactionReservation reservation =
+            wincur::helper::MakeTransactionReservation(
+                *parse_result.request,
+                reservation_timestamp
+            );
+        if (wincur::helper::ReserveTransaction(storage, reservation) !=
+            wincur::helper::ReservationStatus::Success) {
+            return ToExitCode(ExitCode::ProtectedStateError);
+        }
+
         if (parse_result.request->operation == wincur::helper::Operation::Preview &&
             parse_result.request->action.has_value()) {
+            const std::wstring executing_timestamp =
+                wincur::helper::CurrentUtcTimestamp();
+            if (executing_timestamp.empty() ||
+                wincur::helper::TransitionTransaction(
+                    storage,
+                    *parse_result.request,
+                    wincur::helper::TransactionLifecycle::Reserved,
+                    wincur::helper::TransactionLifecycle::Executing,
+                    executing_timestamp
+                ) != wincur::helper::TransitionStatus::Success) {
+                return ToExitCode(ExitCode::ProtectedStateError);
+            }
             const std::wstring timestamp = wincur::helper::CurrentUtcTimestamp();
             if (timestamp.empty()) {
                 return ToExitCode(ExitCode::InternalError);
@@ -136,7 +185,26 @@ int WINAPI wWinMain(
                     inspection,
                     timestamp
                 );
-            return ToExitCode(PersistResult(result, ExitCode::Success));
+            const std::wstring verifying_timestamp =
+                wincur::helper::CurrentUtcTimestamp();
+            if (verifying_timestamp.empty() ||
+                wincur::helper::TransitionTransaction(
+                    storage,
+                    *parse_result.request,
+                    wincur::helper::TransactionLifecycle::Executing,
+                    wincur::helper::TransactionLifecycle::Verifying,
+                    verifying_timestamp
+                ) != wincur::helper::TransitionStatus::Success) {
+                return ToExitCode(ExitCode::ProtectedStateError);
+            }
+            return ToExitCode(FinalizeResult(
+                storage,
+                *parse_result.request,
+                result,
+                wincur::helper::TransactionLifecycle::Verifying,
+                wincur::helper::TransactionLifecycle::Completed,
+                ExitCode::Success
+            ));
         }
 
         if (parse_result.request->operation == wincur::helper::Operation::Rollback) {
@@ -156,7 +224,14 @@ int WINAPI wWinMain(
                     authorization,
                     timestamp
                 );
-            return ToExitCode(PersistResult(result, ExitCode::Blocked));
+            return ToExitCode(FinalizeResult(
+                storage,
+                *parse_result.request,
+                result,
+                wincur::helper::TransactionLifecycle::Reserved,
+                wincur::helper::TransactionLifecycle::Completed,
+                ExitCode::Blocked
+            ));
         }
 
         if (parse_result.request->operation == wincur::helper::Operation::Apply &&
@@ -165,21 +240,63 @@ int WINAPI wWinMain(
                 *parse_result.request->action;
             const wincur::helper::InspectionResult initial =
                 wincur::helper::InspectWindowsAction(action);
+            const wincur::helper::AuthorizationReadiness initial_readiness =
+                wincur::helper::ReadinessFromInspection(initial);
+            wincur::helper::TransactionLifecycle current_lifecycle =
+                wincur::helper::TransactionLifecycle::Reserved;
+            if (initial_readiness ==
+                wincur::helper::AuthorizationReadiness::Eligible) {
+                const std::wstring awaiting_timestamp =
+                    wincur::helper::CurrentUtcTimestamp();
+                if (awaiting_timestamp.empty() ||
+                    wincur::helper::TransitionTransaction(
+                        storage,
+                        *parse_result.request,
+                        current_lifecycle,
+                        wincur::helper::TransactionLifecycle::AwaitingConfirmation,
+                        awaiting_timestamp
+                    ) != wincur::helper::TransitionStatus::Success) {
+                    return ToExitCode(ExitCode::ProtectedStateError);
+                }
+                current_lifecycle =
+                    wincur::helper::TransactionLifecycle::AwaitingConfirmation;
+            }
             wincur::helper::WindowsConfirmationPresenter presenter;
             const std::uint64_t challenge =
                 wincur::helper::CreateConfirmationChallenge();
             const auto authorization = wincur::helper::AuthorizeMutation(
                 *parse_result.request,
                 action,
-                wincur::helper::ReadinessFromInspection(initial),
+                initial_readiness,
                 presenter,
                 [action]() noexcept {
                     return wincur::helper::ReadinessFromInspection(
                         wincur::helper::InspectWindowsAction(action)
                     );
                 },
-                challenge
+                challenge,
+                [&storage, &current_lifecycle, &parse_result]() noexcept {
+                    const std::wstring timestamp =
+                        wincur::helper::CurrentUtcTimestamp();
+                    if (timestamp.empty() ||
+                        wincur::helper::TransitionTransaction(
+                            storage,
+                            *parse_result.request,
+                            wincur::helper::TransactionLifecycle::AwaitingConfirmation,
+                            wincur::helper::TransactionLifecycle::Confirmed,
+                            timestamp
+                        ) != wincur::helper::TransitionStatus::Success) {
+                        return false;
+                    }
+                    current_lifecycle =
+                        wincur::helper::TransactionLifecycle::Confirmed;
+                    return true;
+                }
             );
+            if (authorization.status ==
+                wincur::helper::AuthorizationStatus::ProtectedStateFailure) {
+                return ToExitCode(ExitCode::ProtectedStateError);
+            }
             if (authorization.status !=
                 wincur::helper::AuthorizationStatus::Confirmed) {
                 const std::wstring timestamp =
@@ -193,11 +310,38 @@ int WINAPI wWinMain(
                         authorization,
                         timestamp
                     );
-                return ToExitCode(PersistResult(
+                const bool failed =
+                    authorization.status ==
+                        wincur::helper::AuthorizationStatus::UiFailure ||
+                    authorization.status ==
+                        wincur::helper::AuthorizationStatus::BindingMismatch ||
+                    authorization.status ==
+                        wincur::helper::AuthorizationStatus::Replayed ||
+                    authorization.status ==
+                        wincur::helper::AuthorizationStatus::RevalidationFailed;
+                return ToExitCode(FinalizeResult(
+                    storage,
+                    *parse_result.request,
                     result,
+                    current_lifecycle,
+                    failed ? wincur::helper::TransactionLifecycle::Failed
+                           : wincur::helper::TransactionLifecycle::Completed,
                     ExitForAuthorization(authorization.status)
                 ));
             }
+            const std::wstring executing_timestamp =
+                wincur::helper::CurrentUtcTimestamp();
+            if (executing_timestamp.empty() ||
+                wincur::helper::TransitionTransaction(
+                    storage,
+                    *parse_result.request,
+                    wincur::helper::TransactionLifecycle::Confirmed,
+                    wincur::helper::TransactionLifecycle::Executing,
+                    executing_timestamp
+                ) != wincur::helper::TransitionStatus::Success) {
+                return ToExitCode(ExitCode::ProtectedStateError);
+            }
+            current_lifecycle = wincur::helper::TransactionLifecycle::Executing;
         }
 
         const wincur::helper::BackendOutcome outcome =
@@ -212,7 +356,14 @@ int WINAPI wWinMain(
                     *parse_result.request,
                     timestamp
                 );
-            return ToExitCode(PersistResult(result, ExitCode::Failed));
+            return ToExitCode(FinalizeResult(
+                storage,
+                *parse_result.request,
+                result,
+                wincur::helper::TransactionLifecycle::Executing,
+                wincur::helper::TransactionLifecycle::Failed,
+                ExitCode::Failed
+            ));
         }
 
         return ToExitCode(ExitCode::InternalError);

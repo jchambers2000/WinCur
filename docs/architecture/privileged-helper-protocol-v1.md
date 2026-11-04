@@ -111,11 +111,10 @@ are representable as complete protected results. `Complete=1` means only that
 the result record is durably and structurally complete. It does not mean the
 user confirmed or that a change succeeded.
 
-The current development helper creates the result record after authorization.
-Before any mutation backend is enabled, it must reserve the transaction UUID in
-protected state before confirmation and must recover incomplete reservations.
-The in-process one-use receipt is not a substitute for protected cross-process
-transaction replay prevention.
+Phase 2D reserves the transaction UUID before inspection, confirmation, or any
+future privileged operation. The in-process one-use receipt and protected
+reservation are both required: the receipt prevents reuse inside one helper,
+while exclusive protected-key creation rejects cross-process UUID replay.
 
 ## Exit codes
 
@@ -196,6 +195,36 @@ minimum. A reviewed newer helper may raise but never lower the minimum.
 Each transaction is a direct UUID child of `Transactions`. Existing children
 are rejected. Required values are:
 
+### Reservation metadata
+
+The helper exclusively creates `Transactions\{UUID}` and writes these bounded
+values before doing anything action-specific:
+
+```text
+ReservationSchemaVersion   REG_DWORD  1
+ReservationProtocolVersion REG_DWORD  1
+ReservationTransactionId   REG_SZ     canonical UUID
+ReservationOperation       REG_SZ     preview | apply | rollback
+ReservationActionId        REG_SZ     required except rollback
+ReservationRollbackId      REG_SZ     required only for rollback
+ReservationHelperVersion   REG_SZ     embedded helper version
+ReservationBuildId         REG_SZ     bounded build identifier
+ReservationCreatedUtc      REG_SZ     UTC RFC 3339 timestamp
+ReservationUpdatedUtc      REG_SZ     UTC RFC 3339 timestamp
+Lifecycle                  REG_SZ     lifecycle enum
+ReservationComplete        REG_DWORD  1; written last for reservation
+```
+
+All binding and metadata values precede `ReservationComplete`. The key is
+flushed before and after that marker. A missing marker is a partial reservation;
+its UUID remains permanently unavailable unless a future reviewed repair policy
+can authenticate every required field. Partial or malformed reservations are
+never deleted automatically and never authorize an operation.
+
+### Completed result
+
+After reservation, the existing result values are written into the same key:
+
 ```text
 SchemaVersion       REG_DWORD  1
 ProtocolVersion     REG_DWORD  1
@@ -228,6 +257,69 @@ The UI ignores a result without `Complete=1`. Public results contain no raw
 original values, secrets, local paths, user names, SIDs, command output, or
 stack traces. An incomplete result may be marked Interrupted only after a later
 helper owns the mutex and proves no prior helper remains active.
+
+## Transaction lifecycle
+
+Lifecycle values are:
+
+```text
+Reserved
+AwaitingConfirmation
+Confirmed
+Executing
+Verifying
+Completed
+Interrupted
+Failed
+```
+
+Normal transitions are:
+
+```text
+Reserved -> AwaitingConfirmation | Executing | Completed | Failed
+AwaitingConfirmation -> Confirmed | Completed | Failed
+Confirmed -> Executing | Completed | Failed
+Executing -> Verifying | Completed | Failed
+Verifying -> Completed | Failed
+any non-Interrupted state without Complete -> Interrupted during recovery
+Completed | Interrupted | Failed with Complete -> terminal
+```
+
+Every transition re-reads and validates the immutable operation/action/UUID/
+rollback binding and expected current lifecycle. `ReservationUpdatedUtc` is
+written first, `Lifecycle` second, and the key is flushed. A crash may therefore
+leave the prior lifecycle with a newer timestamp, which is safe because the
+timestamp grants no authority. Replayed, skipped, backward, mismatched, or
+terminal transitions fail closed.
+
+For completion, bounded result fields are written first. The terminal lifecycle
+is flushed next. `Complete=1` remains the final write and is flushed before the
+helper reports persistence success. A terminal lifecycle without `Complete=1`
+is still incomplete and cannot be interpreted as success.
+
+### Recovery
+
+Recovery runs only after acquiring the fixed global mutex. That proves no
+cooperating helper process currently owns the operation, but it is not a crash
+proof against an unrelated Administrator. Each structurally valid reservation
+without a valid completed result is finalized once as `Interrupted`. Recovery:
+
+- never displays confirmation;
+- never retries inspection, confirmation, mutation, verification, or rollback;
+- never converts incomplete evidence into `Succeeded`;
+- preserves the exact compiled binding; and
+- records that no successful outcome can be inferred.
+
+This generic recovery is safe only while all mutation backends are disabled.
+Before a backend can write a Windows setting, `Executing` and `Verifying`
+recovery must reconcile protected rollback state and current configuration;
+generic terminalization alone will not be sufficient.
+
+Partial reservation metadata and malformed or untrusted records are retained
+unchanged and continue to block their UUID. Valid recovered `Interrupted`
+records become ordinary completed retention candidates. Only fully parsed
+completed records beyond the fixed count bound may be pruned. If enumeration
+exceeds the 4,096-key safety bound, the helper blocks rather than deleting data.
 
 ## Rollback capsule schema
 
@@ -376,11 +468,14 @@ Partial and Interrupted capsules are not automatically retryable.
 ## Concurrency and retention
 
 - One fixed global mutex serializes operations and has an explicit descriptor.
+- The mutex is cooperative serialization, not durable ownership. It disappears
+  on process termination and does not exclude an Administrator that bypasses
+  the helper. Exclusive registry-key creation remains the replay boundary.
 - Results may be pruned only by fixed age/count bounds in the helper.
 - Only fully parsed completed results are retention candidates. Incomplete,
   malformed, untrusted, and currently open records are retained fail-closed.
-  A future mutex-owned recovery pass must classify stale incomplete records
-  before any deletion policy is approved.
+  A mutex-owned recovery pass terminalizes only structurally valid abandoned
+  reservations as Interrupted. It retains partial and malformed records.
 - Available rollback capsules are never removed automatically.
 - Version 1 retains consumed and terminal capsules until a separately reviewed
   cleanup policy is approved.

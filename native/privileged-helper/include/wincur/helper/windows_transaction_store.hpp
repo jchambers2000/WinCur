@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace wincur::helper {
 
@@ -33,7 +34,14 @@ public:
     [[nodiscard]] StorageCreateStatus Begin(
         std::wstring_view transaction_id
     ) noexcept override;
+    [[nodiscard]] StorageOpenStatus Open(
+        std::wstring_view transaction_id
+    ) noexcept override;
     [[nodiscard]] bool Write(const TransactionValue& value) noexcept override;
+    [[nodiscard]] bool Flush() noexcept override;
+    [[nodiscard]] bool Read(
+        std::vector<TransactionValue>& values
+    ) noexcept override;
 
 private:
     HKEY transaction_key_{nullptr};
@@ -55,6 +63,15 @@ struct RegistryReadResult final {
     std::optional<TransactionResult> result;
 };
 
+struct RecoverySummary final {
+    std::size_t examined{0};
+    std::size_t recovered_interrupted{0};
+    std::size_t completed_unchanged{0};
+    std::size_t retained_partial_or_malformed{0};
+    bool bounded{true};
+    bool storage_trusted{true};
+};
+
 [[nodiscard]] RegistryReadResult ReadTransactionResultFromRegistry(
     std::wstring_view transaction_id
 ) noexcept;
@@ -66,5 +83,11 @@ struct RegistryReadResult final {
 [[nodiscard]] bool PruneCompletedTransactionResults(
     std::size_t maximum_completed = kMaximumCompletedTransactions
 ) noexcept;
+
+// Must be called only after the helper owns the global operation mutex. It
+// never retries an operation. Structurally valid reservations without a valid
+// completed result are terminalized as Interrupted. Partial and malformed
+// reservations remain untouched and continue to block their UUIDs.
+[[nodiscard]] RecoverySummary RecoverIncompleteTransactions() noexcept;
 
 }  // namespace wincur::helper
