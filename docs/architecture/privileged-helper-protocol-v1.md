@@ -96,15 +96,16 @@ IDs but must use one explicit mapping to protocol IDs.
 - Restores only fixed targets and verifies.
 - Rejects firewall rollback because no firewall capsule exists.
 
-### Phase 2C-2 implementation boundary
+### Phase 2C-2 historical implementation boundary
 
 Preview remains read-only and never displays confirmation. Apply performs the
 initial inspection, helper-owned confirmation, and post-confirmation inspection,
 then returns the explicit non-mutating `NotImplemented` result. Managed or
-ambiguous evidence never reaches the dialog. Rollback is blocked before a
-dialog because protected rollback capsules are not implemented; the shared
-confirmation state machine already supports a future resolved AutoRun or
-PowerShell rollback binding.
+ambiguous evidence never reaches the dialog. At that phase boundary, rollback
+was blocked before a dialog because protected rollback capsules were not yet
+implemented. Phase 2E-2 supersedes the apply details below by requiring a
+durable, transaction-bound capsule before confirmation. Rollback execution
+remains blocked pending a separately reviewed authorization and mutation path.
 
 Cancellation, timeout, dialog failure, binding mismatch, and validation blocks
 are representable as complete protected results. `Complete=1` means only that
@@ -215,6 +216,21 @@ Lifecycle                  REG_SZ     lifecycle enum
 ReservationComplete        REG_DWORD  1; written last for reservation
 ```
 
+An eligible apply transaction receives a second completion-last binding only
+after the private capsule has been persisted, flushed, reread, and validated:
+
+```text
+ReservationCapsuleId   REG_SZ     unique canonical capsule UUID
+MutationBoundary       REG_SZ     mutation-boundary enum
+CapsuleBindingComplete REG_DWORD  1; flushed and written last
+```
+
+The initial boundary is `MutationNotStarted`. Later reviewed mutation code must
+durably advance it to `MutationMayHaveStarted` immediately before its first
+write, then to `MutationCompletedNotVerified` and `VerifiedCompletion` in
+order. Phase 2E-2 never advances beyond `MutationNotStarted`. Partial binding
+fields without `CapsuleBindingComplete=1` make the reservation incomplete.
+
 All binding and metadata values precede `ReservationComplete`. The key is
 flushed before and after that marker. A missing marker is a partial reservation;
 its UUID remains permanently unavailable unless a future reviewed repair policy
@@ -292,6 +308,12 @@ leave the prior lifecycle with a newer timestamp, which is safe because the
 timestamp grants no authority. Replayed, skipped, backward, mismatched, or
 terminal transitions fail closed.
 
+For apply, the immutable authorization context additionally includes the
+protected capsule UUID. The helper-owned confirmation receipt binds operation,
+action, transaction UUID, capsule UUID, rollback UUID when applicable, and the
+one-use challenge. Cross-action, cross-transaction, missing, duplicate,
+corrupt, incomplete, or replayed capsule bindings fail closed.
+
 For completion, bounded result fields are written first. The terminal lifecycle
 is flushed next. `Complete=1` remains the final write and is flushed before the
 helper reports persistence success. A terminal lifecycle without `Complete=1`
@@ -302,7 +324,8 @@ is still incomplete and cannot be interpreted as success.
 Recovery runs only after acquiring the fixed global mutex. That proves no
 cooperating helper process currently owns the operation, but it is not a crash
 proof against an unrelated Administrator. Each structurally valid reservation
-without a valid completed result is finalized once as `Interrupted`. Recovery:
+without a valid completed result is classified using its protected mutation
+boundary and capsule binding. Recovery:
 
 - never displays confirmation;
 - never retries inspection, confirmation, mutation, verification, or rollback;
@@ -310,10 +333,12 @@ without a valid completed result is finalized once as `Interrupted`. Recovery:
 - preserves the exact compiled binding; and
 - records that no successful outcome can be inferred.
 
-This generic recovery is safe only while all mutation backends are disabled.
-Before a backend can write a Windows setting, `Executing` and `Verifying`
-recovery must reconcile protected rollback state and current configuration;
-generic terminalization alone will not be sufficient.
+Only `MutationNotStarted` records are finalized as `Interrupted`; their result
+states whether a valid bound capsule was available. A record at
+`MutationMayHaveStarted`, `MutationCompletedNotVerified`, or an indeterminate
+boundary remains incomplete and retained for future manual reconciliation.
+Its capsule is not deleted, and recovery never retries or rolls it back. The
+global mutex cannot prove the exact instruction at which a crash occurred.
 
 Partial reservation metadata and malformed or untrusted records are retained
 unchanged and continue to block their UUID. Valid recovered `Interrupted`
@@ -393,6 +418,25 @@ proves success. Phase 2D generic interruption recovery remains safe only while
 mutations are disabled; a future mutation backend must persist and flush a
 complete capsule before crossing `MutationMayHaveStarted` and use fresh
 reconciliation rather than retrying automatically.
+
+### Phase 2E-2 apply integration (non-mutating)
+
+For an eligible apply request the helper reserves the transaction, performs
+the existing inspection, captures fixed-target exact state, requires
+unambiguous local authority and rollback-grade evidence, creates a unique
+capsule UUID, persists and rereads the capsule, writes the protected
+transaction-to-capsule binding, and only then transitions to
+`AwaitingConfirmation`. After a matching helper-owned confirmation it captures
+the state again. Any byte, type, existence, authority, binding, or evidence
+change blocks the request. The capsule and transaction binding are reread once
+more before `Executing`.
+
+Phase 2E-2 then calls only the non-mutating stub and records `Failed` with
+`NotImplemented`. It does not mark `MutationMayHaveStarted`, does not claim a
+change, and does not create a successful result. Current registry policy
+ownership remains ambiguous and firewall local state remains unestablished, so
+the production collectors normally block before capsule persistence or the
+confirmation dialog. This is the required fail-closed behavior.
 
 ### Future mutation-ownership extension (not implemented)
 

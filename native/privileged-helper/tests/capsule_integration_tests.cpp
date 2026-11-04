@@ -38,24 +38,35 @@ using namespace wincur::helper;
     HKEY root = nullptr;
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kWinCurRegistryPath, 0,
             KEY_WRITE | KEY_WOW64_64KEY, &root) != ERROR_SUCCESS) return false;
-    HKEY rollback = nullptr;
-    if (RegOpenKeyExW(root, kRollbackCapsulesSubkey, 0,
-            KEY_WRITE | KEY_WOW64_64KEY, &rollback) != ERROR_SUCCESS) {
-        RegCloseKey(root); return false;
-    }
-    const LSTATUS child = RegDeleteKeyExW(rollback, id.c_str(), KEY_WOW64_64KEY, 0);
-    RegCloseKey(rollback);
-    const LSTATUS parent = RegDeleteKeyExW(root, kRollbackCapsulesSubkey,
-                                            KEY_WOW64_64KEY, 0);
+    const auto delete_branch = [&id, root](const wchar_t* parent_name) {
+        HKEY parent = nullptr;
+        const LSTATUS opened = RegOpenKeyExW(
+            root, parent_name, 0, KEY_WRITE | KEY_WOW64_64KEY, &parent);
+        if (opened == ERROR_FILE_NOT_FOUND || opened == ERROR_PATH_NOT_FOUND)
+            return true;
+        if (opened != ERROR_SUCCESS) return false;
+        const LSTATUS child = RegDeleteKeyExW(
+            parent, id.c_str(), KEY_WOW64_64KEY, 0);
+        RegCloseKey(parent);
+        if (child != ERROR_SUCCESS && child != ERROR_FILE_NOT_FOUND &&
+            child != ERROR_PATH_NOT_FOUND) return false;
+        const LSTATUS removed_parent = RegDeleteKeyExW(
+            root, parent_name, KEY_WOW64_64KEY, 0);
+        return removed_parent == ERROR_SUCCESS ||
+               removed_parent == ERROR_FILE_NOT_FOUND ||
+               removed_parent == ERROR_PATH_NOT_FOUND;
+    };
+    const bool rollback_clean = delete_branch(kRollbackCapsulesSubkey);
+    const bool transactions_clean = delete_branch(kTransactionsSubkey);
     RegCloseKey(root);
     const LSTATUS top = RegDeleteKeyExW(HKEY_LOCAL_MACHINE,
         kWinCurRegistryPath, KEY_WOW64_64KEY, 0);
-    if (child != ERROR_SUCCESS || parent != ERROR_SUCCESS ||
-        top != ERROR_SUCCESS) {
-        std::wcerr << L"Cleanup failure: child=" << child
-                   << L" parent=" << parent << L" root=" << top << L"\n";
+    if (!rollback_clean || !transactions_clean || top != ERROR_SUCCESS) {
+        std::wcerr << L"Cleanup failure: rollback=" << rollback_clean
+                   << L" transactions=" << transactions_clean
+                   << L" root=" << top << L"\n";
     }
-    return child == ERROR_SUCCESS && parent == ERROR_SUCCESS && top == ERROR_SUCCESS;
+    return rollback_clean && transactions_clean && top == ERROR_SUCCESS;
 }
 
 class CleanupGuard final {
@@ -101,6 +112,10 @@ int wmain() {
                     static_cast<long>(generated.status));
     }
     const std::wstring& id = generated.value;
+    Request request{};
+    request.operation = Operation::Apply;
+    request.transaction_id = id;
+    request.action = ActionId::DisableAutoRun;
     const auto observed = CaptureWindowsPreChangeState(
         ActionId::DisableAutoRun, id, id, L"2026-11-03T00:00:00Z");
     if (!observed)
@@ -108,28 +123,44 @@ int wmain() {
     CleanupGuard cleanup(id);
     cleanup.Activate();
     {
-        WindowsCapsuleStorage storage;
-        const CapsulePersistStatus persisted = PersistCapsule(storage, *observed);
+        WindowsTransactionStorage transaction_storage;
+        const TransactionReservation reservation = MakeTransactionReservation(
+            request, L"2026-11-03T00:00:00Z");
+        if (ReserveTransaction(transaction_storage, reservation) !=
+            ReservationStatus::Success)
+            return Fail(6, L"transaction.reserve", 0, GetLastError());
+        WindowsCapsuleStorage capsule_storage;
+        const CapsulePersistStatus persisted =
+            PersistCapsule(capsule_storage, *observed);
         if (persisted != CapsulePersistStatus::Success)
-            return Fail(6, L"capsule.persist", static_cast<long>(persisted),
+            return Fail(7, L"capsule.persist", static_cast<long>(persisted),
+                        GetLastError());
+        if (BindCapsuleToTransaction(
+                transaction_storage, request, id,
+                L"2026-11-03T00:00:01Z") != CapsuleBindingStatus::Success)
+            return Fail(8, L"transaction.bind-capsule", 0, GetLastError());
+        if (ValidateTransactionCapsuleBinding(
+                transaction_storage, request, id) !=
+            CapsuleBindingStatus::Success)
+            return Fail(9, L"transaction.revalidate-capsule-binding", 0,
                         GetLastError());
     }
     const auto read = ReadCapsuleFromRegistry(
         id, id, Operation::Apply, ActionId::DisableAutoRun);
     if (read.status != CapsuleRegistryReadStatus::Success || !read.capsule)
-        return Fail(7, L"capsule.read-validate", static_cast<long>(read.status),
+        return Fail(10, L"capsule.read-validate", static_cast<long>(read.status),
                     GetLastError());
     const auto intended = MakeIntendedPostChange(*read.capsule);
     if (!intended)
-        return Fail(8, L"reconciliation.make-intended", -1);
+        return Fail(11, L"reconciliation.make-intended", -1);
     const ReconciliationClassification reconciliation =
         ReconcileState(*read.capsule, *read.capsule, *intended);
     if (reconciliation !=
         ReconciliationClassification::ManagedOrPolicyControlled)
-        return Fail(8, L"reconciliation.fail-closed-policy-authority",
+        return Fail(11, L"reconciliation.fail-closed-policy-authority",
                     static_cast<long>(reconciliation));
     if (!Cleanup(id))
-        return Fail(9, L"cleanup.exact-test-namespace", 0, GetLastError());
+        return Fail(12, L"cleanup.exact-test-namespace", 0, GetLastError());
     cleanup.Release();
     std::wcout << L"Protected capsule storage and read-only reconciliation passed.\n";
     return 0;

@@ -66,6 +66,9 @@ struct RegistryReadResult final {
 struct RecoverySummary final {
     std::size_t examined{0};
     std::size_t recovered_interrupted{0};
+    std::size_t recovered_pre_mutation_with_capsule{0};
+    std::size_t recovered_pre_mutation_without_capsule{0};
+    std::size_t retained_indeterminate{0};
     std::size_t completed_unchanged{0};
     std::size_t retained_partial_or_malformed{0};
     bool bounded{true};
@@ -85,9 +88,9 @@ struct RecoverySummary final {
 ) noexcept;
 
 // Must be called only after the helper owns the global operation mutex. It
-// never retries an operation. Structurally valid reservations without a valid
-// completed result are terminalized as Interrupted. Partial and malformed
-// reservations remain untouched and continue to block their UUIDs.
+// never retries an operation. Only records proven not to have crossed the
+// mutation boundary are terminalized. Indeterminate records and their capsules
+// remain untouched for future manual reconciliation.
 [[nodiscard]] RecoverySummary RecoverIncompleteTransactions() noexcept;
 
 }  // namespace wincur::helper

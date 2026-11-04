@@ -174,6 +174,25 @@ constexpr std::size_t kTimestampCharacters = 20;
     return std::nullopt;
 }
 
+[[nodiscard]] std::optional<MutationBoundary> ParseMutationBoundaryName(
+    const std::wstring_view value
+) noexcept {
+    constexpr std::array<std::pair<std::wstring_view, MutationBoundary>, 5>
+        values{{
+            {L"MutationNotStarted", MutationBoundary::MutationNotStarted},
+            {L"MutationMayHaveStarted", MutationBoundary::MutationMayHaveStarted},
+            {L"MutationCompletedNotVerified",
+             MutationBoundary::MutationCompletedNotVerified},
+            {L"VerifiedCompletion", MutationBoundary::VerifiedCompletion},
+            {L"InterruptedOrIndeterminate",
+             MutationBoundary::InterruptedOrIndeterminate},
+        }};
+    for (const auto& [name, boundary] : values) {
+        if (name == value) return boundary;
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] const TransactionValue* FindValue(
     const std::map<std::wstring, const TransactionValue*>& values,
     const wchar_t* const name
@@ -296,6 +315,22 @@ std::wstring_view LifecycleName(
     return {};
 }
 
+std::wstring_view MutationBoundaryName(const MutationBoundary boundary) noexcept {
+    switch (boundary) {
+        case MutationBoundary::MutationNotStarted:
+            return L"MutationNotStarted";
+        case MutationBoundary::MutationMayHaveStarted:
+            return L"MutationMayHaveStarted";
+        case MutationBoundary::MutationCompletedNotVerified:
+            return L"MutationCompletedNotVerified";
+        case MutationBoundary::VerifiedCompletion:
+            return L"VerifiedCompletion";
+        case MutationBoundary::InterruptedOrIndeterminate:
+            return L"InterruptedOrIndeterminate";
+    }
+    return {};
+}
+
 bool IsAllowedLifecycleTransition(
     const TransactionLifecycle current,
     const TransactionLifecycle next
@@ -366,6 +401,12 @@ SerializeTransactionReservation(const TransactionReservation& reservation) {
          reservation.rollback_id.has_value()) ||
         (reservation.rollback_id.has_value() &&
          !IsCanonicalTransactionUuid(*reservation.rollback_id)) ||
+        (reservation.capsule_id.has_value() &&
+         (reservation.operation != Operation::Apply ||
+          !IsCanonicalTransactionUuid(*reservation.capsule_id))) ||
+        (!reservation.capsule_id.has_value() &&
+         reservation.mutation_boundary != MutationBoundary::MutationNotStarted) ||
+        MutationBoundaryName(reservation.mutation_boundary).empty() ||
         !IsDottedVersion(reservation.helper_version) ||
         !IsAsciiIdentifier(reservation.build_id, kMaximumIdentifierCharacters) ||
         !IsUtcTimestamp(reservation.created_utc) ||
@@ -375,7 +416,7 @@ SerializeTransactionReservation(const TransactionReservation& reservation) {
     }
 
     std::vector<TransactionValue> values;
-    values.reserve(12);
+    values.reserve(15);
     values.push_back(DwordValue(
         L"ReservationSchemaVersion",
         reservation.schema_version
@@ -421,6 +462,17 @@ SerializeTransactionReservation(const TransactionReservation& reservation) {
         L"Lifecycle",
         std::wstring(LifecycleName(reservation.lifecycle))
     ));
+    if (reservation.capsule_id.has_value()) {
+        values.push_back(StringValue(
+            L"ReservationCapsuleId",
+            *reservation.capsule_id
+        ));
+        values.push_back(StringValue(
+            L"MutationBoundary",
+            std::wstring(MutationBoundaryName(reservation.mutation_boundary))
+        ));
+        values.push_back(DwordValue(L"CapsuleBindingComplete", 1));
+    }
     values.push_back(DwordValue(L"ReservationComplete", 1));
     return values;
 }
@@ -432,20 +484,23 @@ ReservationParseResult ParseTransactionReservation(
     std::map<std::wstring, const TransactionValue*> by_name;
     bool has_reservation_value = false;
     std::size_t reservation_value_count = 0;
-    constexpr std::array<std::wstring_view, 12> allowed_names{
+    constexpr std::array<std::wstring_view, 15> allowed_names{
         L"ReservationSchemaVersion", L"ReservationProtocolVersion",
         L"ReservationTransactionId", L"ReservationOperation",
         L"ReservationActionId", L"ReservationRollbackId",
         L"ReservationHelperVersion", L"ReservationBuildId",
         L"ReservationCreatedUtc", L"ReservationUpdatedUtc", L"Lifecycle",
-        L"ReservationComplete",
+        L"ReservationComplete", L"ReservationCapsuleId",
+        L"MutationBoundary", L"CapsuleBindingComplete",
     };
     for (const TransactionValue& value : values) {
         const bool reservation_name =
             std::find(allowed_names.begin(), allowed_names.end(), value.name) !=
             allowed_names.end();
         const bool reservation_prefix =
-            value.name.starts_with(L"Reservation") || value.name == L"Lifecycle";
+            value.name.starts_with(L"Reservation") || value.name == L"Lifecycle" ||
+            value.name == L"MutationBoundary" ||
+            value.name == L"CapsuleBindingComplete";
         if (!reservation_name) {
             if (reservation_prefix) {
                 return {};
@@ -469,6 +524,21 @@ ReservationParseResult ParseTransactionReservation(
     if (complete->type != TransactionValueType::Dword ||
         complete->dword_value != 1) {
         return {};
+    }
+    const bool has_any_capsule_binding =
+        FindValue(by_name, L"ReservationCapsuleId") != nullptr ||
+        FindValue(by_name, L"MutationBoundary") != nullptr ||
+        FindValue(by_name, L"CapsuleBindingComplete") != nullptr;
+    if (has_any_capsule_binding) {
+        const TransactionValue* const binding_complete =
+            FindValue(by_name, L"CapsuleBindingComplete");
+        if (binding_complete == nullptr) {
+            return {ReservationParseStatus::Incomplete, std::nullopt};
+        }
+        if (binding_complete->type != TransactionValueType::Dword ||
+            binding_complete->dword_value != 1) {
+            return {};
+        }
     }
 
     TransactionReservation reservation{};
@@ -532,6 +602,18 @@ ReservationParseResult ParseTransactionReservation(
             return {};
         }
         reservation.rollback_id = rollback->string_value;
+    }
+    if (has_any_capsule_binding) {
+        std::wstring boundary_name;
+        reservation.capsule_id.emplace();
+        if (!ReadString(by_name, L"ReservationCapsuleId",
+                        *reservation.capsule_id) ||
+            !ReadString(by_name, L"MutationBoundary", boundary_name)) {
+            return {};
+        }
+        const auto boundary = ParseMutationBoundaryName(boundary_name);
+        if (!boundary.has_value()) return {};
+        reservation.mutation_boundary = *boundary;
     }
     const auto canonical = SerializeTransactionReservation(reservation);
     if (!canonical.has_value() ||
@@ -609,6 +691,21 @@ TransitionStatus TransitionTransaction(
     if (parsed.reservation->lifecycle != expected) {
         return TransitionStatus::InvalidTransition;
     }
+    const bool apply_requires_capsule =
+        request.operation == Operation::Apply &&
+        (next == TransactionLifecycle::AwaitingConfirmation ||
+         next == TransactionLifecycle::Confirmed ||
+         next == TransactionLifecycle::Executing ||
+         next == TransactionLifecycle::Verifying);
+    if (apply_requires_capsule &&
+        !parsed.reservation->capsule_id.has_value()) {
+        return TransitionStatus::InvalidTransition;
+    }
+    if (request.operation == Operation::Apply &&
+        next == TransactionLifecycle::Executing &&
+        expected != TransactionLifecycle::Confirmed) {
+        return TransitionStatus::InvalidTransition;
+    }
     if (!storage.Write(StringValue(
             L"ReservationUpdatedUtc",
             std::move(updated_utc)
@@ -618,6 +715,114 @@ TransitionStatus TransitionTransaction(
         return TransitionStatus::PartialWrite;
     }
     return TransitionStatus::Success;
+}
+
+CapsuleBindingStatus BindCapsuleToTransaction(
+    TransactionStorage& storage,
+    const Request& request,
+    const std::wstring_view capsule_id,
+    std::wstring updated_utc
+) {
+    if (request.operation != Operation::Apply || !request.action.has_value() ||
+        !IsCanonicalTransactionUuid(capsule_id) || !IsUtcTimestamp(updated_utc)) {
+        return CapsuleBindingStatus::InvalidState;
+    }
+    std::vector<TransactionValue> values;
+    if (!storage.Read(values)) return CapsuleBindingStatus::Error;
+    const auto parsed = ParseTransactionReservation(values, request.transaction_id);
+    if (parsed.status != ReservationParseStatus::Success ||
+        !parsed.reservation.has_value()) {
+        return CapsuleBindingStatus::MalformedState;
+    }
+    if (!ReservationMatchesRequest(*parsed.reservation, request))
+        return CapsuleBindingStatus::BindingMismatch;
+    if (parsed.reservation->capsule_id.has_value())
+        return *parsed.reservation->capsule_id == capsule_id
+                   ? CapsuleBindingStatus::Duplicate
+                   : CapsuleBindingStatus::BindingMismatch;
+    if (parsed.reservation->lifecycle != TransactionLifecycle::Reserved)
+        return CapsuleBindingStatus::InvalidState;
+
+    if (!storage.Write(StringValue(L"ReservationCapsuleId",
+                                   std::wstring(capsule_id))) ||
+        !storage.Write(StringValue(
+            L"MutationBoundary",
+            std::wstring(MutationBoundaryName(MutationBoundary::MutationNotStarted)))) ||
+        !storage.Write(StringValue(L"ReservationUpdatedUtc", updated_utc)) ||
+        !storage.Flush() ||
+        !storage.Write(DwordValue(L"CapsuleBindingComplete", 1)) ||
+        !storage.Flush()) {
+        return CapsuleBindingStatus::PartialWrite;
+    }
+    return ValidateTransactionCapsuleBinding(storage, request, capsule_id);
+}
+
+CapsuleBindingStatus ValidateTransactionCapsuleBinding(
+    TransactionStorage& storage,
+    const Request& request,
+    const std::wstring_view capsule_id
+) {
+    std::vector<TransactionValue> values;
+    if (!storage.Read(values)) return CapsuleBindingStatus::Error;
+    const auto parsed = ParseTransactionReservation(values, request.transaction_id);
+    if (parsed.status != ReservationParseStatus::Success ||
+        !parsed.reservation.has_value()) {
+        return CapsuleBindingStatus::MalformedState;
+    }
+    if (!ReservationMatchesRequest(*parsed.reservation, request) ||
+        !parsed.reservation->capsule_id.has_value() ||
+        *parsed.reservation->capsule_id != capsule_id) {
+        return CapsuleBindingStatus::BindingMismatch;
+    }
+    return CapsuleBindingStatus::Success;
+}
+
+TransitionStatus UpdateMutationBoundary(
+    TransactionStorage& storage,
+    const Request& request,
+    const std::wstring_view capsule_id,
+    const MutationBoundary expected,
+    const MutationBoundary next,
+    std::wstring updated_utc
+) {
+    const bool allowed =
+        (expected == MutationBoundary::MutationNotStarted &&
+         next == MutationBoundary::MutationMayHaveStarted) ||
+        (expected == MutationBoundary::MutationMayHaveStarted &&
+         next == MutationBoundary::MutationCompletedNotVerified) ||
+        (expected == MutationBoundary::MutationCompletedNotVerified &&
+         next == MutationBoundary::VerifiedCompletion) ||
+        (next == MutationBoundary::InterruptedOrIndeterminate &&
+         expected != MutationBoundary::VerifiedCompletion);
+    if (!allowed || !IsUtcTimestamp(updated_utc))
+        return TransitionStatus::InvalidTransition;
+    std::vector<TransactionValue> values;
+    if (!storage.Read(values)) return TransitionStatus::Error;
+    const auto parsed = ParseTransactionReservation(values, request.transaction_id);
+    if (parsed.status != ReservationParseStatus::Success ||
+        !parsed.reservation.has_value()) return TransitionStatus::MalformedState;
+    if (!ReservationMatchesRequest(*parsed.reservation, request) ||
+        !parsed.reservation->capsule_id.has_value() ||
+        *parsed.reservation->capsule_id != capsule_id)
+        return TransitionStatus::BindingMismatch;
+    if (parsed.reservation->mutation_boundary != expected)
+        return TransitionStatus::InvalidTransition;
+    if (!storage.Write(StringValue(L"MutationBoundary",
+                                   std::wstring(MutationBoundaryName(next)))) ||
+        !storage.Write(StringValue(L"ReservationUpdatedUtc",
+                                   std::move(updated_utc))) ||
+        !storage.Flush()) return TransitionStatus::PartialWrite;
+    return TransitionStatus::Success;
+}
+
+RecoveryDisposition ClassifyRecoveryDisposition(
+    const TransactionReservation& reservation,
+    const bool capsule_is_valid
+) noexcept {
+    static_cast<void>(capsule_is_valid);
+    return reservation.mutation_boundary == MutationBoundary::MutationNotStarted
+               ? RecoveryDisposition::TerminalizePreMutation
+               : RecoveryDisposition::PreserveIndeterminate;
 }
 
 PersistStatus FinalizeReservedTransaction(
@@ -650,6 +855,14 @@ PersistStatus FinalizeReservedTransaction(
         result.transaction_id != request.transaction_id ||
         result.operation != request.operation || result.action != request.action ||
         result.rollback_id != request.rollback_id) {
+        return PersistStatus::InvalidRecord;
+    }
+    if (request.operation == Operation::Apply &&
+        (expected == TransactionLifecycle::AwaitingConfirmation ||
+         expected == TransactionLifecycle::Confirmed ||
+         expected == TransactionLifecycle::Executing ||
+         expected == TransactionLifecycle::Verifying) &&
+        !reservation.reservation->capsule_id.has_value()) {
         return PersistStatus::InvalidRecord;
     }
     const auto result_values = SerializeTransactionResult(result);
@@ -689,8 +902,12 @@ TransactionResult MakeInterruptedResult(
     result.message_code = L"RecoveredInterrupted";
     result.display_message =
         L"A prior helper operation ended before a complete result was recorded.";
-    result.verification_summary =
-        L"The operation was not retried. No success is inferred from the incomplete transaction.";
+    result.verification_summary = reservation.mutation_boundary ==
+                                          MutationBoundary::MutationNotStarted
+        ? (reservation.capsule_id.has_value()
+               ? L"The protected capsule was bound, but the mutation boundary was not crossed. The operation was not retried."
+               : L"No protected capsule was bound and the mutation boundary was not crossed. The operation was not retried.")
+        : L"The mutation boundary is indeterminate. The operation was not retried or rolled back, and no success is inferred.";
     result.helper_version = std::wstring(kHelperVersion);
     result.build_id = std::wstring(kHelperBuildId);
     result.timestamp_utc = std::move(timestamp_utc);
@@ -710,7 +927,7 @@ TransactionResult MakeNotImplementedResult(
     result.display_message =
         L"This development helper contains no privileged operation backend.";
     result.verification_summary =
-        L"No Windows security configuration was read or changed.";
+        L"Read-only prerequisites were evaluated, but no Windows security configuration was changed.";
     result.helper_version = std::wstring(kHelperVersion);
     result.build_id = std::wstring(kHelperBuildId);
     result.timestamp_utc = std::move(timestamp_utc);

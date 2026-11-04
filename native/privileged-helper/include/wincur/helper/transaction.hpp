@@ -12,7 +12,7 @@
 namespace wincur::helper {
 
 inline constexpr std::uint32_t kTransactionSchemaVersion = 1;
-inline constexpr std::wstring_view kHelperBuildId = L"phase-2e1-dev";
+inline constexpr std::wstring_view kHelperBuildId = L"phase-2e2-dev";
 inline constexpr std::size_t kMaximumDisplayMessageCharacters = 2048;
 inline constexpr std::size_t kMaximumVerificationSummaryCharacters = 4096;
 inline constexpr std::size_t kMaximumCompletedTransactions = 256;
@@ -40,6 +40,14 @@ enum class TransactionLifecycle {
     Failed,
 };
 
+enum class MutationBoundary {
+    MutationNotStarted,
+    MutationMayHaveStarted,
+    MutationCompletedNotVerified,
+    VerifiedCompletion,
+    InterruptedOrIndeterminate,
+};
+
 struct TransactionReservation final {
     std::uint32_t schema_version{kTransactionSchemaVersion};
     std::uint32_t protocol_version{kProtocolVersion};
@@ -47,6 +55,8 @@ struct TransactionReservation final {
     Operation operation{};
     std::optional<ActionId> action;
     std::optional<std::wstring> rollback_id;
+    std::optional<std::wstring> capsule_id;
+    MutationBoundary mutation_boundary{MutationBoundary::MutationNotStarted};
     std::wstring helper_version;
     std::wstring build_id;
     std::wstring created_utc;
@@ -176,11 +186,29 @@ enum class TransitionStatus {
     Error,
 };
 
+enum class CapsuleBindingStatus {
+    Success,
+    Duplicate,
+    BindingMismatch,
+    InvalidState,
+    MalformedState,
+    PartialWrite,
+    Error,
+};
+
+enum class RecoveryDisposition {
+    TerminalizePreMutation,
+    PreserveIndeterminate,
+};
+
 [[nodiscard]] std::wstring_view OperationName(Operation operation) noexcept;
 [[nodiscard]] std::wstring_view ActionName(ActionId action) noexcept;
 [[nodiscard]] std::wstring_view OutcomeName(TransactionOutcome outcome) noexcept;
 [[nodiscard]] std::wstring_view LifecycleName(
     TransactionLifecycle lifecycle
+) noexcept;
+[[nodiscard]] std::wstring_view MutationBoundaryName(
+    MutationBoundary boundary
 ) noexcept;
 
 [[nodiscard]] bool IsAllowedLifecycleTransition(
@@ -218,6 +246,33 @@ SerializeTransactionReservation(const TransactionReservation& reservation);
     TransactionLifecycle next,
     std::wstring updated_utc
 );
+
+[[nodiscard]] CapsuleBindingStatus BindCapsuleToTransaction(
+    TransactionStorage& storage,
+    const Request& request,
+    std::wstring_view capsule_id,
+    std::wstring updated_utc
+);
+
+[[nodiscard]] CapsuleBindingStatus ValidateTransactionCapsuleBinding(
+    TransactionStorage& storage,
+    const Request& request,
+    std::wstring_view capsule_id
+);
+
+[[nodiscard]] TransitionStatus UpdateMutationBoundary(
+    TransactionStorage& storage,
+    const Request& request,
+    std::wstring_view capsule_id,
+    MutationBoundary expected,
+    MutationBoundary next,
+    std::wstring updated_utc
+);
+
+[[nodiscard]] RecoveryDisposition ClassifyRecoveryDisposition(
+    const TransactionReservation& reservation,
+    bool capsule_is_valid
+) noexcept;
 
 [[nodiscard]] PersistStatus FinalizeReservedTransaction(
     TransactionStorage& storage,

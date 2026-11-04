@@ -162,7 +162,8 @@ M1 must not read or change security configuration.
 
 - [ ] Create and validate HKLM root and ACLs.
 - [ ] Implement transaction schema and Complete-last rule.
-- [ ] Bound result cleanup without touching rollback capsules.
+- [x] Exclude capsule-associated transaction records from automatic result
+  pruning; protected capsules and their bindings remain investigation state.
 - [ ] Add normal-integrity read-only result client prototype.
 - [ ] Test alternate-credential UAC and multi-user reads.
 
@@ -204,7 +205,13 @@ only from the documented `INetFwPolicy2::LocalPolicyModifyState` result.
   (Phase 2E-1; no mutation enabled).
 - [x] Implement read-only reconciliation and mutation interruption boundaries;
   automatic retry and automatic rollback remain prohibited.
-- [ ] Wire capture into a separately reviewed mutation state machine.
+- [x] Wire protected capsule persistence, reread, transaction binding,
+  confirmation binding, and pre-boundary revalidation into the non-mutating
+  apply state machine (Phase 2E-2).
+- [x] Preserve `MutationNotStarted` through the non-mutating stub and retain
+  possibly-started future records as indeterminate during recovery.
+- [ ] Independently review and wire the first real mutation backend, including
+  the durable `MutationMayHaveStarted` transition immediately before writing.
 - [ ] Establish rollback-grade local firewall state; effective COM state alone
   is insufficient, so firewall mutation remains disabled.
 - [ ] Preserve partial and failed verification reporting.
@@ -252,12 +259,22 @@ absence, are preserved. Firewall effective state is captured while local state
 is explicitly not established. Recovery is classify-only. Power-loss fault
 injection and Administrator/SYSTEM tampering remain independent-review items.
 
+Phase 2E-2 binds a unique durable capsule into the protected transaction before
+confirmation, includes the capsule UUID in the one-use confirmation receipt,
+repeats exact capture after confirmation, and rereads both protected records
+immediately before `Executing`. The backend remains `NotImplemented`; the
+mutation boundary remains `MutationNotStarted`. Current providers do not
+establish local ownership for registry policy paths or rollback-grade local
+firewall profile state, so production apply blocks before the dialog.
+
 ### M5 — Protected rollback
 
-- [ ] Implement capsule slots and lifecycle.
+- [x] Implement protected capsule storage and transaction binding for apply;
+  rollback consumption and restoration remain disabled.
 - [ ] Implement exact-state precondition.
 - [ ] Implement AutoRun and PowerShell logging rollback.
-- [ ] Implement interruption reconciliation.
+- [x] Classify pre-mutation interruption versus retained indeterminate state;
+  no automatic retry or rollback.
 - [ ] Expose read-only rollback index.
 - [ ] Make legacy JSONL non-actionable.
 

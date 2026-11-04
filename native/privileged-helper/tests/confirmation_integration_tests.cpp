@@ -39,7 +39,8 @@ int wmain() {
     request.action = wincur::helper::ActionId::DisableAutoRun;
     const auto prompt = wincur::helper::MakeConfirmationPrompt(
         request,
-        wincur::helper::ActionId::DisableAutoRun
+        wincur::helper::ActionId::DisableAutoRun,
+        L"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
     );
     if (!prompt.has_value()) {
         return 78;

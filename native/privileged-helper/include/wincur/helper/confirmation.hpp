@@ -8,6 +8,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace wincur::helper {
 
@@ -24,6 +25,7 @@ struct ConfirmationBinding final {
     Operation operation{};
     ActionId action{};
     std::wstring transaction_id;
+    std::wstring capsule_id;
     std::optional<std::wstring> rollback_id;
 
     [[nodiscard]] bool operator==(
@@ -97,9 +99,15 @@ using ConfirmationAcceptedFunction = std::function<bool()>;
     const InspectionResult& inspection
 ) noexcept;
 
+[[nodiscard]] AuthorizationResult MakeReadinessAuthorizationResult(
+    AuthorizationReadiness readiness,
+    bool after_confirmation
+);
+
 [[nodiscard]] std::optional<ConfirmationPrompt> MakeConfirmationPrompt(
     const Request& request,
-    ActionId resolved_action
+    ActionId resolved_action,
+    std::wstring_view capsule_id
 );
 
 class ConfirmationSession final {
@@ -123,6 +131,7 @@ private:
 [[nodiscard]] AuthorizationResult AuthorizeMutation(
     const Request& request,
     ActionId resolved_action,
+    std::wstring_view capsule_id,
     AuthorizationReadiness initial_readiness,
     ConfirmationPresenter& presenter,
     const RevalidationFunction& revalidate,

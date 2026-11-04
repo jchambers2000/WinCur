@@ -10,6 +10,8 @@ constexpr std::wstring_view kTransaction =
     L"123e4567-e89b-12d3-a456-426614174000";
 constexpr std::wstring_view kRollback =
     L"93b9c3d1-8a62-4d96-b772-0b0768722e17";
+constexpr std::wstring_view kCapsule =
+    L"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 constexpr std::uint64_t kChallenge = 0x9c2f4b0187a56d3eULL;
 
 int failures = 0;
@@ -50,6 +52,7 @@ public:
     bool mismatch_transaction{false};
     bool mismatch_action{false};
     bool mismatch_operation{false};
+    bool mismatch_capsule{false};
     bool mismatch_challenge{false};
     int calls{0};
     std::optional<wincur::helper::ConfirmationPrompt> observed;
@@ -72,6 +75,10 @@ public:
         if (mismatch_operation) {
             binding.operation = wincur::helper::Operation::Rollback;
         }
+        if (mismatch_capsule) {
+            binding.capsule_id =
+                L"bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+        }
         return {
             choice,
             std::move(binding),
@@ -87,6 +94,7 @@ void TestExplicitConfirmationAndFixedContent() {
     const auto result = wincur::helper::AuthorizeMutation(
         ApplyRequest(),
         wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
         wincur::helper::AuthorizationReadiness::Eligible,
         presenter,
         [&revalidations]() {
@@ -105,6 +113,7 @@ void TestExplicitConfirmationAndFixedContent() {
               revalidations == 1,
           "confirmation, protected transition, and revalidation occur once");
     Check(presenter.observed.has_value() &&
+              presenter.observed->binding.capsule_id == kCapsule &&
               presenter.observed->action_name == L"Disable AutoRun" &&
               presenter.observed->proposed_change.find(L"all drive types") !=
                   std::wstring::npos &&
@@ -130,6 +139,7 @@ void TestProtectedTransitionFailure() {
     const auto result = wincur::helper::AuthorizeMutation(
         ApplyRequest(),
         wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
         wincur::helper::AuthorizationReadiness::Eligible,
         presenter,
         [&revalidations] {
@@ -172,6 +182,7 @@ void TestCancellationClosureTimeoutAndFailure() {
         const auto result = wincur::helper::AuthorizeMutation(
             ApplyRequest(),
             wincur::helper::ActionId::DisableAutoRun,
+            kCapsule,
             wincur::helper::AuthorizationReadiness::Eligible,
             presenter,
             [&revalidations]() {
@@ -192,6 +203,7 @@ void TestBindingMismatchAndReplay() {
     auto result = wincur::helper::AuthorizeMutation(
         ApplyRequest(),
         wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
         wincur::helper::AuthorizationReadiness::Eligible,
         mismatch,
         [] { return wincur::helper::AuthorizationReadiness::Eligible; },
@@ -205,6 +217,7 @@ void TestBindingMismatchAndReplay() {
     result = wincur::helper::AuthorizeMutation(
         ApplyRequest(),
         wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
         wincur::helper::AuthorizationReadiness::Eligible,
         mismatch,
         [] { return wincur::helper::AuthorizationReadiness::Eligible; },
@@ -213,9 +226,24 @@ void TestBindingMismatchAndReplay() {
     Check(result.status == wincur::helper::AuthorizationStatus::BindingMismatch,
           "action mismatch denies confirmation");
 
+    mismatch.mismatch_action = false;
+    mismatch.mismatch_capsule = true;
+    result = wincur::helper::AuthorizeMutation(
+        ApplyRequest(),
+        wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
+        wincur::helper::AuthorizationReadiness::Eligible,
+        mismatch,
+        [] { return wincur::helper::AuthorizationReadiness::Eligible; },
+        kChallenge
+    );
+    Check(result.status == wincur::helper::AuthorizationStatus::BindingMismatch,
+          "capsule mismatch denies confirmation");
+
     const auto prompt = wincur::helper::MakeConfirmationPrompt(
         ApplyRequest(),
-        wincur::helper::ActionId::DisableAutoRun
+        wincur::helper::ActionId::DisableAutoRun,
+        kCapsule
     );
     Check(prompt.has_value(), "valid request creates a confirmation prompt");
     if (prompt.has_value()) {
@@ -241,6 +269,7 @@ void TestUnsupportedRequests() {
     auto result = wincur::helper::AuthorizeMutation(
         request,
         wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
         wincur::helper::AuthorizationReadiness::Eligible,
         presenter,
         [] { return wincur::helper::AuthorizationReadiness::Eligible; },
@@ -256,6 +285,7 @@ void TestUnsupportedRequests() {
     result = wincur::helper::AuthorizeMutation(
         request,
         wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
         wincur::helper::AuthorizationReadiness::Eligible,
         presenter,
         [] { return wincur::helper::AuthorizationReadiness::Eligible; },
@@ -268,6 +298,7 @@ void TestUnsupportedRequests() {
     result = wincur::helper::AuthorizeMutation(
         RollbackRequest(),
         wincur::helper::ActionId::EnableFirewallProfiles,
+        kRollback,
         wincur::helper::AuthorizationReadiness::Eligible,
         presenter,
         [] { return wincur::helper::AuthorizationReadiness::Eligible; },
@@ -280,6 +311,7 @@ void TestUnsupportedRequests() {
     result = wincur::helper::AuthorizeMutation(
         ApplyRequest(),
         wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
         wincur::helper::AuthorizationReadiness::Eligible,
         presenter,
         [] { return wincur::helper::AuthorizationReadiness::Eligible; },
@@ -300,6 +332,7 @@ void TestPolicyBlocksAndRevalidation() {
         const auto result = wincur::helper::AuthorizeMutation(
             ApplyRequest(),
             wincur::helper::ActionId::DisableAutoRun,
+            kCapsule,
             readiness,
             presenter,
             [] { return wincur::helper::AuthorizationReadiness::Eligible; },
@@ -314,6 +347,7 @@ void TestPolicyBlocksAndRevalidation() {
     auto result = wincur::helper::AuthorizeMutation(
         ApplyRequest(),
         wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
         wincur::helper::AuthorizationReadiness::Eligible,
         presenter,
         [] { return wincur::helper::AuthorizationReadiness::Managed; },
@@ -325,6 +359,7 @@ void TestPolicyBlocksAndRevalidation() {
     result = wincur::helper::AuthorizeMutation(
         ApplyRequest(),
         wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
         wincur::helper::AuthorizationReadiness::Eligible,
         presenter,
         [] { return wincur::helper::AuthorizationReadiness::Ambiguous; },
@@ -337,6 +372,7 @@ void TestPolicyBlocksAndRevalidation() {
     result = wincur::helper::AuthorizeMutation(
         ApplyRequest(),
         wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
         wincur::helper::AuthorizationReadiness::Eligible,
         presenter,
         [] { return wincur::helper::AuthorizationReadiness::Inaccessible; },
@@ -352,6 +388,7 @@ void TestRollbackBindingAndTransactionResult() {
     const auto authorization = wincur::helper::AuthorizeMutation(
         RollbackRequest(),
         wincur::helper::ActionId::DisableAutoRun,
+        kRollback,
         wincur::helper::AuthorizationReadiness::Eligible,
         presenter,
         [] { return wincur::helper::AuthorizationReadiness::Eligible; },
@@ -367,6 +404,7 @@ void TestRollbackBindingAndTransactionResult() {
     const auto cancelled = wincur::helper::AuthorizeMutation(
         ApplyRequest(),
         wincur::helper::ActionId::DisableAutoRun,
+        kCapsule,
         wincur::helper::AuthorizationReadiness::Eligible,
         presenter,
         [] { return wincur::helper::AuthorizationReadiness::Eligible; },

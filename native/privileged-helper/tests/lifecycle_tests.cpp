@@ -17,6 +17,10 @@ constexpr std::wstring_view kTransaction =
     L"123e4567-e89b-12d3-a456-426614174000";
 constexpr std::wstring_view kOtherTransaction =
     L"93b9c3d1-8a62-4d96-b772-0b0768722e17";
+constexpr std::wstring_view kCapsule =
+    L"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+constexpr std::wstring_view kOtherCapsule =
+    L"bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
 constexpr std::wstring_view kTimestamp = L"2026-11-03T06:00:00Z";
 
 int failures = 0;
@@ -203,6 +207,10 @@ void TestTransitionsAndBinding() {
     Check(wincur::helper::ReserveTransaction(storage, Reservation()) ==
               wincur::helper::ReservationStatus::Success,
           "transition fixture reserves");
+    Check(wincur::helper::BindCapsuleToTransaction(
+              storage, ApplyRequest(), kCapsule, std::wstring(kTimestamp)) ==
+              wincur::helper::CapsuleBindingStatus::Success,
+          "transition fixture binds capsule before confirmation");
     Check(wincur::helper::TransitionTransaction(
               storage,
               ApplyRequest(),
@@ -240,12 +248,122 @@ void TestTransitionsAndBinding() {
           "replayed confirmation transition is rejected");
 }
 
+void TestProtectedCapsuleBindingAndMutationBoundary() {
+    auto shared = std::make_shared<SharedState>();
+    MemoryLifecycleStorage storage(shared);
+    Check(wincur::helper::ReserveTransaction(storage, Reservation()) ==
+              wincur::helper::ReservationStatus::Success,
+          "capsule binding fixture reserves transaction");
+    Check(wincur::helper::ValidateTransactionCapsuleBinding(
+              storage, ApplyRequest(), kCapsule) ==
+              wincur::helper::CapsuleBindingStatus::BindingMismatch,
+          "missing capsule binding blocks authorization");
+    Check(wincur::helper::TransitionTransaction(
+              storage, ApplyRequest(),
+              wincur::helper::TransactionLifecycle::Reserved,
+              wincur::helper::TransactionLifecycle::AwaitingConfirmation,
+              std::wstring(kTimestamp)) ==
+              wincur::helper::TransitionStatus::InvalidTransition,
+          "apply cannot reach confirmation without protected capsule binding");
+    Check(wincur::helper::BindCapsuleToTransaction(
+              storage, ApplyRequest(), kCapsule, std::wstring(kTimestamp)) ==
+              wincur::helper::CapsuleBindingStatus::Success,
+          "durable capsule binds to exact transaction");
+    Check(wincur::helper::ValidateTransactionCapsuleBinding(
+              storage, ApplyRequest(), kCapsule) ==
+              wincur::helper::CapsuleBindingStatus::Success,
+          "capsule binding revalidates");
+    Check(wincur::helper::BindCapsuleToTransaction(
+              storage, ApplyRequest(), kCapsule, std::wstring(kTimestamp)) ==
+              wincur::helper::CapsuleBindingStatus::Duplicate,
+          "duplicate capsule binding is rejected");
+    Check(wincur::helper::ValidateTransactionCapsuleBinding(
+              storage, ApplyRequest(), kOtherCapsule) ==
+              wincur::helper::CapsuleBindingStatus::BindingMismatch,
+          "cross-capsule substitution is rejected");
+    auto other_action = ApplyRequest();
+    other_action.action = wincur::helper::ActionId::EnablePowerShellLogging;
+    Check(wincur::helper::ValidateTransactionCapsuleBinding(
+              storage, other_action, kCapsule) ==
+              wincur::helper::CapsuleBindingStatus::BindingMismatch,
+          "cross-action capsule substitution is rejected");
+    auto other_transaction = ApplyRequest();
+    other_transaction.transaction_id = std::wstring(kOtherTransaction);
+    Check(wincur::helper::ValidateTransactionCapsuleBinding(
+              storage, other_transaction, kCapsule) !=
+              wincur::helper::CapsuleBindingStatus::Success,
+          "cross-transaction capsule substitution is rejected");
+
+    const auto parsed = wincur::helper::ParseTransactionReservation(
+        storage.Values(), kTransaction);
+    Check(parsed.status == wincur::helper::ReservationParseStatus::Success &&
+              parsed.reservation.has_value() &&
+              parsed.reservation->capsule_id.has_value() &&
+              *parsed.reservation->capsule_id == kCapsule &&
+              parsed.reservation->mutation_boundary ==
+                  wincur::helper::MutationBoundary::MutationNotStarted,
+          "protected reservation records capsule and pre-mutation boundary");
+    Check(wincur::helper::ClassifyRecoveryDisposition(
+              *parsed.reservation, true) ==
+              wincur::helper::RecoveryDisposition::TerminalizePreMutation,
+          "valid pre-mutation capsule is safely terminalizable");
+    Check(wincur::helper::ClassifyRecoveryDisposition(
+              *parsed.reservation, false) ==
+              wincur::helper::RecoveryDisposition::TerminalizePreMutation,
+          "missing pre-mutation capsule cannot imply a mutation");
+
+    Check(wincur::helper::UpdateMutationBoundary(
+              storage, ApplyRequest(), kCapsule,
+              wincur::helper::MutationBoundary::MutationNotStarted,
+              wincur::helper::MutationBoundary::MutationMayHaveStarted,
+              std::wstring(kTimestamp)) ==
+              wincur::helper::TransitionStatus::Success,
+          "future boundary can advance only through explicit protected update");
+    const auto may_have_started = wincur::helper::ParseTransactionReservation(
+        storage.Values(), kTransaction);
+    Check(may_have_started.reservation.has_value() &&
+              wincur::helper::ClassifyRecoveryDisposition(
+                  *may_have_started.reservation, true) ==
+                  wincur::helper::RecoveryDisposition::PreserveIndeterminate,
+          "possible mutation is retained for manual reconciliation");
+    Check(may_have_started.reservation.has_value() &&
+              wincur::helper::ClassifyRecoveryDisposition(
+                  *may_have_started.reservation, false) ==
+                  wincur::helper::RecoveryDisposition::PreserveIndeterminate,
+          "missing capsule after possible mutation remains indeterminate");
+}
+
+void TestCapsuleBindingPartialWrite() {
+    auto shared = std::make_shared<SharedState>();
+    MemoryLifecycleStorage setup(shared);
+    Check(wincur::helper::ReserveTransaction(setup, Reservation()) ==
+              wincur::helper::ReservationStatus::Success,
+          "partial capsule binding fixture reserves");
+    MemoryLifecycleStorage failing(shared);
+    Check(failing.Open(kTransaction) ==
+              wincur::helper::StorageOpenStatus::Opened,
+          "partial capsule binding fixture reopens");
+    failing.fail_write_call = 1;
+    Check(wincur::helper::BindCapsuleToTransaction(
+              failing, ApplyRequest(), kCapsule, std::wstring(kTimestamp)) ==
+              wincur::helper::CapsuleBindingStatus::PartialWrite,
+          "failed capsule binding persistence is explicit");
+    Check(wincur::helper::ParseTransactionReservation(
+              failing.Values(), kTransaction).status ==
+              wincur::helper::ReservationParseStatus::Incomplete,
+          "partial capsule binding cannot be treated as valid");
+}
+
 void TestCancellationAndInterruption() {
     auto shared = std::make_shared<SharedState>();
     MemoryLifecycleStorage storage(shared);
     Check(wincur::helper::ReserveTransaction(storage, Reservation()) ==
               wincur::helper::ReservationStatus::Success,
           "cancellation fixture reserves");
+    Check(wincur::helper::BindCapsuleToTransaction(
+              storage, ApplyRequest(), kCapsule, std::wstring(kTimestamp)) ==
+              wincur::helper::CapsuleBindingStatus::Success,
+          "cancellation fixture binds capsule");
     Check(wincur::helper::TransitionTransaction(
               storage,
               ApplyRequest(),
@@ -281,13 +399,32 @@ void TestCancellationAndInterruption() {
         Check(wincur::helper::ReserveTransaction(abandoned, Reservation()) ==
                   wincur::helper::ReservationStatus::Success,
               "abandoned reservation is durable");
+        Check(wincur::helper::BindCapsuleToTransaction(
+                  abandoned, ApplyRequest(), kCapsule,
+                  std::wstring(kTimestamp)) ==
+                  wincur::helper::CapsuleBindingStatus::Success,
+              "abandoned operation binds capsule");
         Check(wincur::helper::TransitionTransaction(
                   abandoned,
                   ApplyRequest(),
                   wincur::helper::TransactionLifecycle::Reserved,
-                  wincur::helper::TransactionLifecycle::Executing,
+                  wincur::helper::TransactionLifecycle::AwaitingConfirmation,
                   std::wstring(kTimestamp)
               ) == wincur::helper::TransitionStatus::Success,
+              "abandoned operation awaits confirmation");
+        Check(wincur::helper::TransitionTransaction(
+                  abandoned, ApplyRequest(),
+                  wincur::helper::TransactionLifecycle::AwaitingConfirmation,
+                  wincur::helper::TransactionLifecycle::Confirmed,
+                  std::wstring(kTimestamp)) ==
+                  wincur::helper::TransitionStatus::Success,
+              "abandoned operation records confirmation");
+        Check(wincur::helper::TransitionTransaction(
+                  abandoned, ApplyRequest(),
+                  wincur::helper::TransactionLifecycle::Confirmed,
+                  wincur::helper::TransactionLifecycle::Executing,
+                  std::wstring(kTimestamp)) ==
+                  wincur::helper::TransitionStatus::Success,
               "simulated terminated process reached executing");
     }
     MemoryLifecycleStorage recovery(interrupted_shared);
@@ -381,13 +518,32 @@ void TestPartialWritesAndMalformedState() {
         Check(wincur::helper::ReserveTransaction(setup, Reservation()) ==
                   wincur::helper::ReservationStatus::Success,
               "partial finalization fixture reserves");
+        Check(wincur::helper::BindCapsuleToTransaction(
+                  setup, ApplyRequest(), kCapsule,
+                  std::wstring(kTimestamp)) ==
+                  wincur::helper::CapsuleBindingStatus::Success,
+              "partial finalization fixture binds capsule");
         Check(wincur::helper::TransitionTransaction(
                   setup,
                   ApplyRequest(),
                   wincur::helper::TransactionLifecycle::Reserved,
-                  wincur::helper::TransactionLifecycle::Executing,
+                  wincur::helper::TransactionLifecycle::AwaitingConfirmation,
                   std::wstring(kTimestamp)
               ) == wincur::helper::TransitionStatus::Success,
+              "partial finalization fixture awaits confirmation");
+        Check(wincur::helper::TransitionTransaction(
+                  setup, ApplyRequest(),
+                  wincur::helper::TransactionLifecycle::AwaitingConfirmation,
+                  wincur::helper::TransactionLifecycle::Confirmed,
+                  std::wstring(kTimestamp)) ==
+                  wincur::helper::TransitionStatus::Success,
+              "partial finalization fixture confirms");
+        Check(wincur::helper::TransitionTransaction(
+                  setup, ApplyRequest(),
+                  wincur::helper::TransactionLifecycle::Confirmed,
+                  wincur::helper::TransactionLifecycle::Executing,
+                  std::wstring(kTimestamp)) ==
+                  wincur::helper::TransitionStatus::Success,
               "partial finalization fixture executes");
         MemoryLifecycleStorage failing(final_shared);
         Check(failing.Open(kTransaction) ==
@@ -420,6 +576,8 @@ int main() {
     TestReservationAndReplay();
     TestConcurrentReservation();
     TestTransitionsAndBinding();
+    TestProtectedCapsuleBindingAndMutationBoundary();
+    TestCapsuleBindingPartialWrite();
     TestCancellationAndInterruption();
     TestPartialWritesAndMalformedState();
 

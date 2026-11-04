@@ -182,7 +182,7 @@ std::optional<PreChangeCapsule> CaptureWindowsPreChangeState(
                     result.registry_values[0], result.authority) ||
                 !ReadExact(kAutoRunPath, L"NoAutorun",
                     result.registry_values[1], result.authority)) return std::nullopt;
-        } else {
+        } else if (action == ActionId::EnablePowerShellLogging) {
             result.target_count = 3;
             if (!ReadExact(kScriptBlockPath, L"EnableScriptBlockLogging",
                     result.registry_values[0], result.authority) ||
@@ -190,6 +190,8 @@ std::optional<PreChangeCapsule> CaptureWindowsPreChangeState(
                     result.registry_values[1], result.authority) ||
                 !ReadExact(kModuleNamesPath, L"*",
                     result.registry_values[2], result.authority)) return std::nullopt;
+        } else {
+            return std::nullopt;
         }
         return result;
     } catch (...) { return std::nullopt; }

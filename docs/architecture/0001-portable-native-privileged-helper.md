@@ -192,6 +192,12 @@ UAC plus the helper confirmation because the UI is user-writable.
   COM interfaces, but rollback-grade local per-profile state is not established.
   Firewall mutation stays disabled rather than treating effective state as
   locally owned configuration.
+- Phase 2E-2 integrates unique capsule creation, durability verification,
+  protected transaction binding, capsule-bound confirmation, post-confirmation
+  exact-state comparison, and immediate pre-boundary reread. Because current
+  ownership evidence remains ambiguous, production apply fails closed before
+  confirmation. The only backend remains non-mutating and rollback remains
+  unavailable.
 
 ## References
 

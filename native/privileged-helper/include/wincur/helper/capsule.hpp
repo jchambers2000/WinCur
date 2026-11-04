@@ -115,6 +115,31 @@ struct CapsuleParseResult final {
     const PreChangeCapsule& capsule
 );
 
+enum class CapsuleAuthorizationStatus {
+    Eligible,
+    Changed,
+    Managed,
+    Ambiguous,
+    Inaccessible,
+    Unsupported,
+    Invalid,
+};
+
+[[nodiscard]] bool CapsuleMatchesRequest(
+    const PreChangeCapsule& capsule,
+    const Request& request,
+    std::wstring_view expected_capsule_id
+) noexcept;
+
+[[nodiscard]] CapsuleAuthorizationStatus EvaluateCapsuleAuthorization(
+    const PreChangeCapsule& capsule
+) noexcept;
+
+[[nodiscard]] CapsuleAuthorizationStatus CompareCapturedState(
+    const PreChangeCapsule& protected_pre_change,
+    const PreChangeCapsule& current_observation
+) noexcept;
+
 enum class ReconciliationClassification {
     Unchanged,
     IntendedStateObserved,
@@ -129,14 +154,6 @@ enum class ReconciliationClassification {
     const PreChangeCapsule& current_observation,
     const PreChangeCapsule& intended_post_change
 ) noexcept;
-
-enum class MutationBoundary {
-    MutationNotStarted,
-    MutationMayHaveStarted,
-    MutationCompletedNotVerified,
-    VerifiedCompletion,
-    InterruptedOrIndeterminate,
-};
 
 struct RecoveryAssessment final {
     MutationBoundary boundary{MutationBoundary::InterruptedOrIndeterminate};

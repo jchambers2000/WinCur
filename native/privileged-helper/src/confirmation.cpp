@@ -19,7 +19,7 @@ namespace {
     };
 }
 
-[[nodiscard]] AuthorizationResult ReadinessResult(
+AuthorizationResult ReadinessResultInternal(
     const AuthorizationReadiness readiness,
     const bool after_confirmation
 ) {
@@ -82,6 +82,13 @@ namespace {
 
 }  // namespace
 
+AuthorizationResult MakeReadinessAuthorizationResult(
+    const AuthorizationReadiness readiness,
+    const bool after_confirmation
+) {
+    return ReadinessResultInternal(readiness, after_confirmation);
+}
+
 AuthorizationReadiness ReadinessFromInspection(
     const InspectionResult& inspection
 ) noexcept {
@@ -105,10 +112,12 @@ AuthorizationReadiness ReadinessFromInspection(
 
 std::optional<ConfirmationPrompt> MakeConfirmationPrompt(
     const Request& request,
-    const ActionId resolved_action
+    const ActionId resolved_action,
+    const std::wstring_view capsule_id
 ) {
     if (request.operation == Operation::Preview ||
-        !IsCanonicalTransactionUuid(request.transaction_id)) {
+        !IsCanonicalTransactionUuid(request.transaction_id) ||
+        !IsCanonicalTransactionUuid(capsule_id)) {
         return std::nullopt;
     }
     if (request.operation == Operation::Apply &&
@@ -118,7 +127,8 @@ std::optional<ConfirmationPrompt> MakeConfirmationPrompt(
     }
     if (request.operation == Operation::Rollback &&
         (request.action.has_value() || !request.rollback_id.has_value() ||
-         !IsCanonicalTransactionUuid(*request.rollback_id))) {
+         !IsCanonicalTransactionUuid(*request.rollback_id) ||
+         *request.rollback_id != capsule_id)) {
         return std::nullopt;
     }
 
@@ -127,6 +137,7 @@ std::optional<ConfirmationPrompt> MakeConfirmationPrompt(
         request.operation,
         resolved_action,
         request.transaction_id,
+        std::wstring(capsule_id),
         request.rollback_id,
     };
 
@@ -206,6 +217,7 @@ AuthorizationStatus ConfirmationSession::Consume(
 AuthorizationResult AuthorizeMutation(
     const Request& request,
     const ActionId resolved_action,
+    const std::wstring_view capsule_id,
     const AuthorizationReadiness initial_readiness,
     ConfirmationPresenter& presenter,
     const RevalidationFunction& revalidate,
@@ -213,7 +225,8 @@ AuthorizationResult AuthorizeMutation(
     const ConfirmationAcceptedFunction& on_confirmed
 ) noexcept {
     try {
-        const auto prompt = MakeConfirmationPrompt(request, resolved_action);
+        const auto prompt =
+            MakeConfirmationPrompt(request, resolved_action, capsule_id);
         if (!prompt.has_value() || !revalidate) {
             return Result(
                 AuthorizationStatus::UnsupportedRequest,
@@ -231,7 +244,7 @@ AuthorizationResult AuthorizeMutation(
             );
         }
         if (initial_readiness != AuthorizationReadiness::Eligible) {
-            return ReadinessResult(initial_readiness, false);
+            return MakeReadinessAuthorizationResult(initial_readiness, false);
         }
 
         ConfirmationSession session(*prompt, challenge);
@@ -297,9 +310,9 @@ AuthorizationResult AuthorizeMutation(
         }
         const AuthorizationReadiness current = revalidate();
         if (current != AuthorizationReadiness::Eligible) {
-            return ReadinessResult(current, true);
+            return MakeReadinessAuthorizationResult(current, true);
         }
-        return ReadinessResult(current, true);
+        return MakeReadinessAuthorizationResult(current, true);
     } catch (...) {
         return Result(
             AuthorizationStatus::UiFailure,

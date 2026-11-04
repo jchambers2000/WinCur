@@ -1,4 +1,5 @@
 #include "wincur/helper/capsule.hpp"
+#include "wincur/helper/stub_backend.hpp"
 
 #include <Windows.h>
 
@@ -86,6 +87,23 @@ bool Check(bool condition, const char* message) {
 int wmain() {
     bool ok = true;
     const PreChangeCapsule original = AutoRun();
+    Request request{};
+    request.operation = Operation::Apply;
+    request.transaction_id = kId;
+    request.action = ActionId::DisableAutoRun;
+    ok &= Check(ExecuteStub(request) == BackendOutcome::NotImplemented,
+                "apply backend remains explicitly non-mutating");
+    ok &= Check(CapsuleMatchesRequest(original, request, kId),
+                "capsule binds to exact apply transaction and action");
+    auto substituted_request = request;
+    substituted_request.transaction_id =
+        L"11234567-89ab-4cde-8f01-23456789abcd";
+    ok &= Check(!CapsuleMatchesRequest(original, substituted_request, kId),
+                "cross-transaction capsule substitution is rejected");
+    substituted_request = request;
+    substituted_request.action = ActionId::EnablePowerShellLogging;
+    ok &= Check(!CapsuleMatchesRequest(original, substituted_request, kId),
+                "cross-action capsule substitution is rejected");
     auto serialized = SerializeCapsule(original);
     ok &= Check(serialized.has_value(), "serialize exact absent state");
     serialized->push_back({L"CapsuleComplete", CapsuleValueType::Dword, 1, {}, {}});
@@ -194,6 +212,15 @@ int wmain() {
     ok &= Check(ReconcileState(original, partial, *intended) ==
                     ReconciliationClassification::PartiallyChanged,
                 "reconcile partial state");
+    ok &= Check(EvaluateCapsuleAuthorization(original) ==
+                    CapsuleAuthorizationStatus::Eligible,
+                "unambiguously local rollback-grade capsule is eligible");
+    ok &= Check(CompareCapturedState(original, original) ==
+                    CapsuleAuthorizationStatus::Eligible,
+                "unchanged post-confirmation evidence remains eligible");
+    ok &= Check(CompareCapturedState(original, partial) ==
+                    CapsuleAuthorizationStatus::Changed,
+                "changed configuration after confirmation fails closed");
     PreChangeCapsule external = original;
     external.registry_values[0] = Dword(7);
     ok &= Check(ReconcileState(original, external, *intended) ==
@@ -203,10 +230,17 @@ int wmain() {
     ok &= Check(ReconcileState(original, external, *intended) ==
                     ReconciliationClassification::ManagedOrPolicyControlled,
                 "managed evidence fails closed");
+    ok &= Check(CompareCapturedState(original, external) ==
+                    CapsuleAuthorizationStatus::Managed,
+                "changed management evidence blocks authorization");
     external.authority = PolicyAuthority::Ambiguous;
     ok &= Check(ReconcileState(original, external, *intended) ==
                     ReconciliationClassification::ManagedOrPolicyControlled,
                 "ambiguous management evidence fails closed");
+    external.authority = PolicyAuthority::Unsupported;
+    ok &= Check(EvaluateCapsuleAuthorization(external) ==
+                    CapsuleAuthorizationStatus::Unsupported,
+                "unsupported policy authority fails closed");
 
     const auto recovery = AssessRecovery(MutationBoundary::MutationMayHaveStarted,
         original, partial, *intended);

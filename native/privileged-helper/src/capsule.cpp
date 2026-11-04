@@ -336,6 +336,76 @@ CapsulePersistStatus PersistCapsule(
     return CapsulePersistStatus::Success;
 }
 
+bool CapsuleMatchesRequest(
+    const PreChangeCapsule& capsule,
+    const Request& request,
+    const std::wstring_view expected_capsule_id
+) noexcept {
+    return ValidCapsule(capsule) && request.operation == Operation::Apply &&
+           request.action.has_value() && capsule.operation == request.operation &&
+           capsule.action == *request.action &&
+           capsule.transaction_id == request.transaction_id &&
+           capsule.capsule_id == expected_capsule_id &&
+           capsule.helper_version == kHelperVersion &&
+           capsule.build_identity == kHelperBuildId;
+}
+
+CapsuleAuthorizationStatus EvaluateCapsuleAuthorization(
+    const PreChangeCapsule& capsule
+) noexcept {
+    if (!ValidCapsule(capsule)) return CapsuleAuthorizationStatus::Invalid;
+    switch (capsule.authority) {
+        case PolicyAuthority::NoReliableManagedOverrideEvidence:
+            break;
+        case PolicyAuthority::Managed:
+            return CapsuleAuthorizationStatus::Managed;
+        case PolicyAuthority::Ambiguous:
+            return CapsuleAuthorizationStatus::Ambiguous;
+        case PolicyAuthority::Inaccessible:
+            return CapsuleAuthorizationStatus::Inaccessible;
+        case PolicyAuthority::Unsupported:
+            return CapsuleAuthorizationStatus::Unsupported;
+    }
+    if (capsule.kind == ExactStateKind::Firewall) {
+        for (std::size_t index = 0; index < capsule.target_count; ++index) {
+            if (capsule.firewall_profiles[index].effective ==
+                    ObservedState::Unavailable ||
+                capsule.firewall_profiles[index].local ==
+                    ObservedState::Unavailable ||
+                capsule.firewall_profiles[index].local ==
+                    ObservedState::NotEstablished) {
+                return CapsuleAuthorizationStatus::Ambiguous;
+            }
+        }
+    }
+    return CapsuleAuthorizationStatus::Eligible;
+}
+
+CapsuleAuthorizationStatus CompareCapturedState(
+    const PreChangeCapsule& original,
+    const PreChangeCapsule& current
+) noexcept {
+    const CapsuleAuthorizationStatus current_status =
+        EvaluateCapsuleAuthorization(current);
+    if (current_status != CapsuleAuthorizationStatus::Eligible)
+        return current_status;
+    const auto intended = MakeIntendedPostChange(original);
+    if (!intended.has_value()) return CapsuleAuthorizationStatus::Invalid;
+    switch (ReconcileState(original, current, *intended)) {
+        case ReconciliationClassification::Unchanged:
+            return CapsuleAuthorizationStatus::Eligible;
+        case ReconciliationClassification::ManagedOrPolicyControlled:
+            return CapsuleAuthorizationStatus::Managed;
+        case ReconciliationClassification::Indeterminate:
+            return CapsuleAuthorizationStatus::Ambiguous;
+        case ReconciliationClassification::IntendedStateObserved:
+        case ReconciliationClassification::PartiallyChanged:
+        case ReconciliationClassification::ExternallyModified:
+            return CapsuleAuthorizationStatus::Changed;
+    }
+    return CapsuleAuthorizationStatus::Invalid;
+}
+
 ReconciliationClassification ReconcileState(
     const PreChangeCapsule& original,
     const PreChangeCapsule& current,

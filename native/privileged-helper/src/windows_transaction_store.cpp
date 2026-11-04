@@ -1,6 +1,7 @@
 #include "wincur/helper/windows_transaction_store.hpp"
 
 #include "wincur/helper/registry_security.hpp"
+#include "wincur/helper/windows_capsule_store.hpp"
 
 #include <Sddl.h>
 
@@ -577,7 +578,9 @@ RegistryReadResult ReadTransactionResultFromRegistry(
         result_values.reserve(values.size());
         for (const TransactionValue& value : values) {
             if (value.name.starts_with(L"Reservation") ||
-                value.name == L"Lifecycle") {
+                value.name == L"Lifecycle" ||
+                value.name == L"MutationBoundary" ||
+                value.name == L"CapsuleBindingComplete") {
                 continue;
             }
             result_values.push_back(value);
@@ -724,6 +727,26 @@ bool PruneCompletedTransactionResults(
             RegistryReadResult result = ReadTransactionResultFromRegistry(id);
             if (result.status == RegistryReadStatus::Success &&
                 result.result.has_value()) {
+                WindowsTransactionStorage protected_record;
+                if (protected_record.Open(id) != StorageOpenStatus::Opened) {
+                    return false;
+                }
+                std::vector<TransactionValue> protected_values;
+                if (!protected_record.Read(protected_values)) {
+                    return false;
+                }
+                const ReservationParseResult reservation =
+                    ParseTransactionReservation(protected_values, id);
+                if (reservation.status != ReservationParseStatus::Success ||
+                    !reservation.reservation.has_value()) {
+                    return false;
+                }
+                if (reservation.reservation->capsule_id.has_value()) {
+                    // Capsule-associated transactions remain authoritative
+                    // investigation state and are never automatic retention
+                    // candidates.
+                    continue;
+                }
                 candidates.push_back({id, result.result->timestamp_utc});
             }
         }
@@ -872,6 +895,26 @@ RecoverySummary RecoverIncompleteTransactions() noexcept {
             request.transaction_id = parsed.reservation->transaction_id;
             request.action = parsed.reservation->action;
             request.rollback_id = parsed.reservation->rollback_id;
+            bool capsule_valid = false;
+            if (parsed.reservation->capsule_id.has_value() &&
+                parsed.reservation->action.has_value()) {
+                const CapsuleRegistryReadResult capsule = ReadCapsuleFromRegistry(
+                    *parsed.reservation->capsule_id,
+                    parsed.reservation->transaction_id,
+                    parsed.reservation->operation,
+                    *parsed.reservation->action
+                );
+                capsule_valid =
+                    capsule.status == CapsuleRegistryReadStatus::Success &&
+                    capsule.capsule.has_value();
+            }
+            if (ClassifyRecoveryDisposition(
+                    *parsed.reservation,
+                    capsule_valid
+                ) == RecoveryDisposition::PreserveIndeterminate) {
+                ++summary.retained_indeterminate;
+                continue;
+            }
             const std::wstring timestamp = CurrentUtcTimestamp();
             if (timestamp.empty()) {
                 summary.storage_trusted = false;
@@ -891,6 +934,11 @@ RecoverySummary RecoverIncompleteTransactions() noexcept {
                 return summary;
             }
             ++summary.recovered_interrupted;
+            if (capsule_valid) {
+                ++summary.recovered_pre_mutation_with_capsule;
+            } else {
+                ++summary.recovered_pre_mutation_without_capsule;
+            }
         }
         return summary;
     } catch (...) {

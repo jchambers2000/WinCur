@@ -1,20 +1,27 @@
 #include "wincur/helper/operation_mutex.hpp"
 #include "wincur/helper/confirmation.hpp"
+#include "wincur/helper/capsule.hpp"
 #include "wincur/helper/inspection.hpp"
 #include "wincur/helper/protocol.hpp"
 #include "wincur/helper/stub_backend.hpp"
 #include "wincur/helper/transaction.hpp"
 #include "wincur/helper/windows_transaction_store.hpp"
 #include "wincur/helper/windows_confirmation.hpp"
+#include "wincur/helper/windows_capsule_capture.hpp"
+#include "wincur/helper/windows_capsule_store.hpp"
 #include "wincur/helper/windows_inspection.hpp"
+#include "wincur/helper/windows_uuid.hpp"
 
 #include <Windows.h>
 #include <Shellapi.h>
 
 #include <cstddef>
 #include <cwchar>
+#include <optional>
 #include <span>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -70,6 +77,42 @@ using wincur::helper::ExitCode;
         default:
             return ExitCode::Failed;
     }
+}
+
+[[nodiscard]] wincur::helper::AuthorizationReadiness ReadinessFromCapsule(
+    const wincur::helper::CapsuleAuthorizationStatus status
+) noexcept {
+    using wincur::helper::AuthorizationReadiness;
+    using wincur::helper::CapsuleAuthorizationStatus;
+    switch (status) {
+        case CapsuleAuthorizationStatus::Eligible:
+            return AuthorizationReadiness::Eligible;
+        case CapsuleAuthorizationStatus::Managed:
+            return AuthorizationReadiness::Managed;
+        case CapsuleAuthorizationStatus::Ambiguous:
+        case CapsuleAuthorizationStatus::Changed:
+            return AuthorizationReadiness::Ambiguous;
+        case CapsuleAuthorizationStatus::Inaccessible:
+            return AuthorizationReadiness::Inaccessible;
+        case CapsuleAuthorizationStatus::Unsupported:
+            return AuthorizationReadiness::Unsupported;
+        case CapsuleAuthorizationStatus::Invalid:
+            return AuthorizationReadiness::Failed;
+    }
+    return AuthorizationReadiness::Failed;
+}
+
+[[nodiscard]] wincur::helper::AuthorizationResult ProtectedFailure(
+    std::wstring code,
+    std::wstring message,
+    std::wstring verification
+) {
+    return {
+        wincur::helper::AuthorizationStatus::ProtectedStateFailure,
+        std::move(code),
+        std::move(message),
+        std::move(verification),
+    };
 }
 
 }  // namespace
@@ -215,7 +258,7 @@ int WINAPI wWinMain(
             const wincur::helper::AuthorizationResult authorization{
                 wincur::helper::AuthorizationStatus::BlockedPrecondition,
                 L"RollbackCapsuleUnavailable",
-                L"Protected rollback capsules are not implemented in this development helper.",
+                L"Protected pre-change evidence is not authorized for rollback in this development helper.",
                 L"No rollback was authorized and no Windows security setting was changed.",
             };
             const auto result =
@@ -244,35 +287,210 @@ int WINAPI wWinMain(
                 wincur::helper::ReadinessFromInspection(initial);
             wincur::helper::TransactionLifecycle current_lifecycle =
                 wincur::helper::TransactionLifecycle::Reserved;
-            if (initial_readiness ==
-                wincur::helper::AuthorizationReadiness::Eligible) {
-                const std::wstring awaiting_timestamp =
+            const auto finalize_authorization = [&storage,
+                                                 &parse_result,
+                                                 &current_lifecycle](
+                const wincur::helper::AuthorizationResult& authorization,
+                const ExitCode exit_code
+            ) -> int {
+                const std::wstring timestamp =
                     wincur::helper::CurrentUtcTimestamp();
-                if (awaiting_timestamp.empty() ||
-                    wincur::helper::TransitionTransaction(
-                        storage,
+                if (timestamp.empty()) return ToExitCode(ExitCode::InternalError);
+                const auto result =
+                    wincur::helper::MakeAuthorizationTransactionResult(
                         *parse_result.request,
-                        current_lifecycle,
-                        wincur::helper::TransactionLifecycle::AwaitingConfirmation,
-                        awaiting_timestamp
-                    ) != wincur::helper::TransitionStatus::Success) {
-                    return ToExitCode(ExitCode::ProtectedStateError);
-                }
-                current_lifecycle =
-                    wincur::helper::TransactionLifecycle::AwaitingConfirmation;
+                        authorization,
+                        timestamp
+                    );
+                const bool failed =
+                    authorization.status ==
+                        wincur::helper::AuthorizationStatus::UiFailure ||
+                    authorization.status ==
+                        wincur::helper::AuthorizationStatus::BindingMismatch ||
+                    authorization.status ==
+                        wincur::helper::AuthorizationStatus::Replayed ||
+                    authorization.status ==
+                        wincur::helper::AuthorizationStatus::RevalidationFailed ||
+                    authorization.status ==
+                        wincur::helper::AuthorizationStatus::ProtectedStateFailure;
+                return ToExitCode(FinalizeResult(
+                    storage,
+                    *parse_result.request,
+                    result,
+                    current_lifecycle,
+                    failed ? wincur::helper::TransactionLifecycle::Failed
+                           : wincur::helper::TransactionLifecycle::Completed,
+                    exit_code
+                ));
+            };
+            if (initial_readiness !=
+                wincur::helper::AuthorizationReadiness::Eligible) {
+                const auto authorization =
+                    wincur::helper::MakeReadinessAuthorizationResult(
+                        initial_readiness,
+                        false
+                    );
+                return finalize_authorization(
+                    authorization,
+                    ExitForAuthorization(authorization.status)
+                );
             }
+
+            const auto generated =
+                wincur::helper::GenerateCanonicalTransactionUuid();
+            if (generated.status !=
+                wincur::helper::UuidGenerationStatus::Success) {
+                const auto failure = ProtectedFailure(
+                    L"CapsuleIdentifierUnavailable",
+                    L"WinCur could not create a protected capsule identifier.",
+                    L"The operation stopped before confirmation and no security setting was changed."
+                );
+                return finalize_authorization(failure, ExitCode::ProtectedStateError);
+            }
+            const std::wstring capsule_id = generated.value;
+            const std::wstring capture_timestamp =
+                wincur::helper::CurrentUtcTimestamp();
+            if (capture_timestamp.empty())
+                return ToExitCode(ExitCode::InternalError);
+            const auto captured =
+                wincur::helper::CaptureWindowsPreChangeState(
+                    action,
+                    capsule_id,
+                    parse_result.request->transaction_id,
+                    capture_timestamp
+                );
+            if (!captured.has_value() ||
+                !wincur::helper::CapsuleMatchesRequest(
+                    *captured,
+                    *parse_result.request,
+                    capsule_id
+                )) {
+                const auto failure = ProtectedFailure(
+                    L"CapsuleCaptureFailed",
+                    L"WinCur could not capture trustworthy pre-change evidence.",
+                    L"Confirmation was not displayed and no security setting was changed."
+                );
+                return finalize_authorization(failure, ExitCode::ProtectedStateError);
+            }
+            const auto capsule_readiness = ReadinessFromCapsule(
+                wincur::helper::EvaluateCapsuleAuthorization(*captured)
+            );
+            if (capsule_readiness !=
+                wincur::helper::AuthorizationReadiness::Eligible) {
+                const auto authorization =
+                    wincur::helper::MakeReadinessAuthorizationResult(
+                        capsule_readiness,
+                        false
+                    );
+                return finalize_authorization(
+                    authorization,
+                    ExitForAuthorization(authorization.status)
+                );
+            }
+
+            {
+                wincur::helper::WindowsCapsuleStorage capsule_storage;
+                if (wincur::helper::PersistCapsule(
+                        capsule_storage,
+                        *captured
+                    ) != wincur::helper::CapsulePersistStatus::Success) {
+                    const auto failure = ProtectedFailure(
+                        L"CapsulePersistenceFailed",
+                        L"WinCur could not durably store the pre-change capsule.",
+                        L"Confirmation was not displayed and no security setting was changed."
+                    );
+                    return finalize_authorization(
+                        failure,
+                        ExitCode::ProtectedStateError
+                    );
+                }
+            }
+            const auto durable = wincur::helper::ReadCapsuleFromRegistry(
+                capsule_id,
+                parse_result.request->transaction_id,
+                parse_result.request->operation,
+                action
+            );
+            if (durable.status !=
+                    wincur::helper::CapsuleRegistryReadStatus::Success ||
+                !durable.capsule.has_value() ||
+                !wincur::helper::CapsuleMatchesRequest(
+                    *durable.capsule,
+                    *parse_result.request,
+                    capsule_id
+                ) ||
+                wincur::helper::CompareCapturedState(
+                    *captured,
+                    *durable.capsule
+                ) != wincur::helper::CapsuleAuthorizationStatus::Eligible) {
+                const auto failure = ProtectedFailure(
+                    L"CapsuleDurabilityVerificationFailed",
+                    L"WinCur could not verify the protected pre-change capsule.",
+                    L"Confirmation was not displayed and no security setting was changed."
+                );
+                return finalize_authorization(failure, ExitCode::ProtectedStateError);
+            }
+            const std::wstring binding_timestamp =
+                wincur::helper::CurrentUtcTimestamp();
+            if (binding_timestamp.empty())
+                return ToExitCode(ExitCode::InternalError);
+            if (wincur::helper::BindCapsuleToTransaction(
+                    storage,
+                    *parse_result.request,
+                    capsule_id,
+                    binding_timestamp
+                ) != wincur::helper::CapsuleBindingStatus::Success) {
+                return ToExitCode(ExitCode::ProtectedStateError);
+            }
+            const std::wstring awaiting_timestamp =
+                wincur::helper::CurrentUtcTimestamp();
+            if (awaiting_timestamp.empty() ||
+                wincur::helper::TransitionTransaction(
+                    storage,
+                    *parse_result.request,
+                    current_lifecycle,
+                    wincur::helper::TransactionLifecycle::AwaitingConfirmation,
+                    awaiting_timestamp
+                ) != wincur::helper::TransitionStatus::Success) {
+                return ToExitCode(ExitCode::ProtectedStateError);
+            }
+            current_lifecycle =
+                wincur::helper::TransactionLifecycle::AwaitingConfirmation;
+
             wincur::helper::WindowsConfirmationPresenter presenter;
             const std::uint64_t challenge =
                 wincur::helper::CreateConfirmationChallenge();
+            std::optional<wincur::helper::PreChangeCapsule>
+                post_confirmation_observation;
             const auto authorization = wincur::helper::AuthorizeMutation(
                 *parse_result.request,
                 action,
+                capsule_id,
                 initial_readiness,
                 presenter,
-                [action]() noexcept {
-                    return wincur::helper::ReadinessFromInspection(
-                        wincur::helper::InspectWindowsAction(action)
+                [action,
+                 &capsule_id,
+                 &captured,
+                 &post_confirmation_observation,
+                 &parse_result]() noexcept {
+                    const auto current =
+                        wincur::helper::CaptureWindowsPreChangeState(
+                            action,
+                            capsule_id,
+                            parse_result.request->transaction_id,
+                            wincur::helper::CurrentUtcTimestamp()
+                        );
+                    if (!current.has_value())
+                        return wincur::helper::AuthorizationReadiness::Failed;
+                    const auto status = wincur::helper::CompareCapturedState(
+                        *captured,
+                        *current
                     );
+                    if (status ==
+                        wincur::helper::CapsuleAuthorizationStatus::Eligible) {
+                        post_confirmation_observation = *current;
+                    }
+                    return ReadinessFromCapsule(status);
                 },
                 challenge,
                 [&storage, &current_lifecycle, &parse_result]() noexcept {
@@ -299,35 +517,49 @@ int WINAPI wWinMain(
             }
             if (authorization.status !=
                 wincur::helper::AuthorizationStatus::Confirmed) {
-                const std::wstring timestamp =
-                    wincur::helper::CurrentUtcTimestamp();
-                if (timestamp.empty()) {
-                    return ToExitCode(ExitCode::InternalError);
-                }
-                const auto result =
-                    wincur::helper::MakeAuthorizationTransactionResult(
-                        *parse_result.request,
-                        authorization,
-                        timestamp
-                    );
-                const bool failed =
-                    authorization.status ==
-                        wincur::helper::AuthorizationStatus::UiFailure ||
-                    authorization.status ==
-                        wincur::helper::AuthorizationStatus::BindingMismatch ||
-                    authorization.status ==
-                        wincur::helper::AuthorizationStatus::Replayed ||
-                    authorization.status ==
-                        wincur::helper::AuthorizationStatus::RevalidationFailed;
-                return ToExitCode(FinalizeResult(
+                return finalize_authorization(
+                    authorization,
+                    ExitForAuthorization(authorization.status)
+                );
+            }
+            const auto revalidated_capsule =
+                wincur::helper::ReadCapsuleFromRegistry(
+                    capsule_id,
+                    parse_result.request->transaction_id,
+                    parse_result.request->operation,
+                    action
+                );
+            if (!post_confirmation_observation.has_value() ||
+                revalidated_capsule.status !=
+                    wincur::helper::CapsuleRegistryReadStatus::Success ||
+                !revalidated_capsule.capsule.has_value() ||
+                !wincur::helper::CapsuleMatchesRequest(
+                    *revalidated_capsule.capsule,
+                    *parse_result.request,
+                    capsule_id
+                ) ||
+                wincur::helper::CompareCapturedState(
+                    *captured,
+                    *revalidated_capsule.capsule
+                ) != wincur::helper::CapsuleAuthorizationStatus::Eligible ||
+                wincur::helper::ValidateTransactionCapsuleBinding(
                     storage,
                     *parse_result.request,
-                    result,
-                    current_lifecycle,
-                    failed ? wincur::helper::TransactionLifecycle::Failed
-                           : wincur::helper::TransactionLifecycle::Completed,
-                    ExitForAuthorization(authorization.status)
-                ));
+                    capsule_id
+                ) != wincur::helper::CapsuleBindingStatus::Success ||
+                wincur::helper::CompareCapturedState(
+                    *revalidated_capsule.capsule,
+                    *post_confirmation_observation
+                ) != wincur::helper::CapsuleAuthorizationStatus::Eligible) {
+                const auto failure = ProtectedFailure(
+                    L"CapsuleRevalidationFailed",
+                    L"WinCur could not revalidate the protected capsule binding.",
+                    L"The operation stopped before the mutation boundary and no security setting was changed."
+                );
+                return finalize_authorization(
+                    failure,
+                    ExitCode::ProtectedStateError
+                );
             }
             const std::wstring executing_timestamp =
                 wincur::helper::CurrentUtcTimestamp();

@@ -1,12 +1,12 @@
-# WinCur native privileged helper — Phase 2D
+# WinCur native privileged helper — Phase 2E-2
 
 This directory contains the C++20/Win32 skeleton for the future
 `WinCur.PrivilegedHelper.exe`. It implements strict protocol parsing, the
 global operation mutex, protected transaction results, embedded metadata, an
 Administrator manifest, native read-only preview providers for the three
 existing hardening actions, and a helper-owned confirmation boundary.
-Phase 2D also reserves every transaction in protected HKLM state before
-inspection or confirmation and records explicit lifecycle transitions.
+The helper reserves every transaction in protected HKLM state and implements
+the Phase 2E-2 non-mutating capsule-binding lifecycle.
 
 The helper is **not connected to WinCur, not signed, and not suitable for
 distribution**. A valid `preview` request reads only compiled Windows targets
@@ -14,9 +14,10 @@ and writes a bounded result beneath the protected 64-bit
 `HKLM\SOFTWARE\WinCur\Transactions` namespace. An eligible `apply` request
 displays a native action-specific dialog, binds the response to the exact
 request, and repeats read-only inspection before reaching the explicit
-`Failed` / `NotImplemented` stub. `rollback` remains blocked because no
-protected capsule exists. The helper performs no Windows security configuration
-writes and creates no rollback state.
+`Failed` / `NotImplemented` stub. Current policy-ownership evidence blocks
+production apply before confirmation. `rollback` remains blocked because the
+captured pre-change evidence is not yet authorized for restoration. The helper
+performs no Windows security configuration writes.
 
 Every invocation now follows an exclusive reservation. A duplicate, completed,
 incomplete, malformed, or legacy transaction UUID is rejected before any
@@ -131,12 +132,12 @@ dialog failure, binding mismatch, and reuse all deny authorization. Managed or
 ambiguous evidence blocks before the dialog and again during the mandatory
 post-confirmation read-only revalidation.
 
-Signing, UI integration, rollback capsules, and every security-setting mutation
-remain future milestones. Process exit alone is never an operation outcome;
+Signing, UI integration, rollback execution, and every security-setting
+mutation remain future milestones. Process exit alone is never an operation outcome;
 future clients must read and validate the completed protected result. A complete
 result does not imply confirmation or success. Reservation is implemented;
-protected rollback capsules and mutation-aware crash reconciliation remain
-required before any mutation backend can be enabled.
+independent review of capsule ownership, policy authority, mutation-boundary
+durability, and reconciliation remains required before any backend is enabled.
 
 Phase 2E-1 adds the non-mutating foundation for protected pre-change capsules.
 The serializer preserves registry absence, type, and exact bytes. The Windows
@@ -147,6 +148,15 @@ Read-only reconciliation never retries or automatically rolls back. Firewall
 local state remains unresolved, so firewall mutation remains disabled.
 Registry policy-path ownership is likewise recorded as ambiguous because a
 read alone cannot distinguish local, domain, or MDM authority.
+
+Phase 2E-2 integrates that foundation into the apply lifecycle without enabling
+any security-setting writer. A unique capsule is persisted and reread before a
+completion-last transaction binding can be created. The capsule UUID is part
+of the helper-owned confirmation receipt. Exact state and authority are
+recaptured after confirmation, and both protected records are reread before
+`Executing`. The mutation boundary remains `MutationNotStarted`; the stub then
+records `Failed/NotImplemented`. With current providers, ambiguous registry
+policy ownership and unresolved firewall local state block before confirmation.
 
 Build the opt-in disposable-VM capsule harness with:
 
@@ -167,10 +177,11 @@ $env:WINCUR_RUN_CAPSULE_REGISTRY_TESTS = `
 .\build\msvc-x64-release\WinCur.PrivilegedHelper.CapsuleIntegrationTests.exe
 ```
 
-The harness refuses a preexisting test root, writes one generated capsule only
-under that namespace, performs fixed-target read-only AutoRun capture and
-reconciliation, and removes only the root it created. Restore the disposable
-VM snapshot after testing even if cleanup reports success.
+The harness refuses a preexisting test root, reserves one transaction, writes
+one generated capsule, persists and revalidates their binding, performs
+fixed-target read-only AutoRun reconciliation, and removes only the exact test
+children and root it created. Restore the disposable VM snapshot after testing
+even if cleanup reports success.
 
 ## Phase 2D boundary
 
