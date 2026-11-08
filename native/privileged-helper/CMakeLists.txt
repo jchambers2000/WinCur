@@ -81,6 +81,7 @@ add_library(
         src/protocol.cpp
         src/stub_backend.cpp
         src/inspection.cpp
+        src/management_posture.cpp
         src/confirmation.cpp
         src/transaction.cpp
         src/capsule.cpp
@@ -94,6 +95,7 @@ add_library(
         src/registry_security.cpp
         src/windows_confirmation.cpp
         src/windows_inspection.cpp
+        src/windows_management_posture.cpp
         src/windows_transaction_store.cpp
         src/windows_capsule_store.cpp
         src/windows_capsule_capture.cpp
@@ -108,6 +110,10 @@ target_link_libraries(
         Bcrypt
         Comctl32
         Ole32
+        OleAut32
+        MDMRegistration
+        Netapi32
+        Wbemuuid
 )
 wincur_harden_target(wincur_helper_windows)
 
@@ -202,6 +208,40 @@ if(BUILD_TESTING)
     )
 
     add_executable(
+        WinCur.PrivilegedHelper.ManagementPostureTests
+        tests/management_posture_tests.cpp
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.ManagementPostureTests
+        PRIVATE
+            wincur_helper_core
+    )
+    wincur_harden_executable(
+        WinCur.PrivilegedHelper.ManagementPostureTests
+    )
+    add_test(
+        NAME privileged_helper_management_posture
+        COMMAND WinCur.PrivilegedHelper.ManagementPostureTests
+    )
+
+    add_executable(
+        WinCur.PrivilegedHelper.ManagementPostureWindowsTests
+        tests/management_posture_windows_tests.cpp
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.ManagementPostureWindowsTests
+        PRIVATE
+            wincur_helper_windows
+    )
+    wincur_harden_executable(
+        WinCur.PrivilegedHelper.ManagementPostureWindowsTests
+    )
+    add_test(
+        NAME privileged_helper_management_posture_windows
+        COMMAND WinCur.PrivilegedHelper.ManagementPostureWindowsTests
+    )
+
+    add_executable(
         WinCur.PrivilegedHelper.ConfirmationTests
         tests/confirmation_tests.cpp
     )
@@ -259,6 +299,26 @@ if(BUILD_TESTING)
     add_test(
         NAME privileged_helper_uuid
         COMMAND WinCur.PrivilegedHelper.UuidTests
+    )
+endif()
+
+option(
+    WINCUR_BUILD_POSTURE_INTEGRATION_TESTS
+    "Build opt-in read-only Windows management-posture tests"
+    OFF
+)
+if(WINCUR_BUILD_POSTURE_INTEGRATION_TESTS)
+    add_executable(
+        WinCur.PrivilegedHelper.ManagementPostureIntegrationTests
+        tests/management_posture_integration_tests.cpp
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.ManagementPostureIntegrationTests
+        PRIVATE
+            wincur_helper_windows
+    )
+    wincur_harden_executable(
+        WinCur.PrivilegedHelper.ManagementPostureIntegrationTests
     )
 endif()
 

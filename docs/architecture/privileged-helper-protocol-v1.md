@@ -438,6 +438,13 @@ ownership remains ambiguous and firewall local state remains unestablished, so
 the production collectors normally block before capsule persistence or the
 confirmation dialog. This is the required fail-closed behavior.
 
+Phase 2F-2 adds an internal read-only management-posture provider without
+changing protocol version 1 or its result schema. The provider records domain
+membership, MDM registration, Local GPO fixed-target matches, RSoP fixed-target
+matches, provider health, and evidence limitations in memory. It is not yet an
+authorization input, is not serialized into the public transaction record, and
+cannot advance a transaction lifecycle or capsule authority.
+
 ### Future mutation-ownership extension (not implemented)
 
 The following ownership/lifecycle slots describe the later rollback phase.

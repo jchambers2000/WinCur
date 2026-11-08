@@ -1,4 +1,4 @@
-# WinCur native privileged helper — Phase 2E-2
+# WinCur native privileged helper — Phase 2F-2 foundation
 
 This directory contains the C++20/Win32 skeleton for the future
 `WinCur.PrivilegedHelper.exe`. It implements strict protocol parsing, the
@@ -31,6 +31,7 @@ The controlling specifications are:
 - [`ADR-0001`](../../docs/architecture/0001-portable-native-privileged-helper.md)
 - [Protocol version 1](../../docs/architecture/privileged-helper-protocol-v1.md)
 - [Threat model and plan](../../docs/architecture/privileged-helper-threat-model-and-plan.md)
+- [Management-posture provider](../../docs/architecture/management-posture-provider.md)
 
 ## Pinned build inputs
 
@@ -99,8 +100,9 @@ The preview implementation reads only:
 - the fixed 64-bit HKLM AutoRun values `NoDriveTypeAutoRun` and `NoAutorun`;
 - the fixed 64-bit HKLM Script Block Logging, Module Logging, and `ModuleNames`
   wildcard policy values; and
-- effective Domain, Private, and Public profile state through `INetFwPolicy2`,
-  plus its documented `LocalPolicyModifyState` evidence.
+- local Domain, Private, and Public profile state through `INetFwPolicy2`, plus
+  its documented rule/group `LocalPolicyModifyState` evidence. Neither result
+  is treated as complete effective-profile ownership evidence.
 
 The executable contains no:
 
@@ -157,6 +159,41 @@ recaptured after confirmation, and both protected records are reread before
 `Executing`. The mutation boundary remains `MutationNotStarted`; the stub then
 records `Failed/NotImplemented`. With current providers, ambiguous registry
 policy ownership and unresolved firewall local state block before confirmation.
+
+Phase 2F-2 adds a separate management-posture library. It uses documented,
+read-only Windows APIs to inspect domain/workgroup membership, MDM registration,
+the default Local Computer GPO, and computer-scope RSoP attribution for the five
+fixed AutoRun and Windows PowerShell targets. Provider health and freshness are
+explicit. RSoP absence remains ambiguous because its freshness cannot be proven
+authoritatively. This evidence is not connected to apply or rollback and does
+not alter protocol version 1.
+
+The production Local GPO collector uses a dedicated STA thread. COM
+initialization, `IGroupPolicyObject` creation and use, the read-only GPO open,
+the returned `HKEY`, fixed-target queries, and cleanup all occur on that same
+thread. COM apartment errors and access denial remain fail-closed provider
+results. The opt-in harness also reports a diagnostic MTA comparison, but that
+comparison does not feed production evidence or authorization.
+
+Build the optional read-only posture harness with:
+
+```powershell
+cmake --preset msvc-x64-release `
+  -DWINCUR_BUILD_POSTURE_INTEGRATION_TESTS=ON
+cmake --build --preset msvc-x64-release `
+  --target WinCur.PrivilegedHelper.ManagementPostureIntegrationTests
+```
+
+Run it in a disposable Windows 11 VM from either a standard or elevated shell:
+
+```powershell
+$env:WINCUR_RUN_READ_ONLY_POSTURE_INTEGRATION = `
+  'DISPOSABLE_WINDOWS_11_VM_READ_ONLY_POSTURE'
+.\build\msvc-x64-release\WinCur.PrivilegedHelper.ManagementPostureIntegrationTests.exe
+```
+
+The harness creates no protected transaction and writes no policy, registry,
+firewall, capsule, or rollback state. Its numeric evidence is diagnostic only.
 
 Build the opt-in disposable-VM capsule harness with:
 

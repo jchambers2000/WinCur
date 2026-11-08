@@ -8,9 +8,13 @@ without enabling a security-configuration write.
 Phase 2D adds protected pre-operation reservation, explicit lifecycle
 transitions, and no-retry interruption recovery. Security-setting mutation and
 rollback execution remain absent.
+Phase 2F-2 adds a bounded read-only management-posture evidence provider. It is
+not connected to mutation authorization and does not make missing policy
+records authoritative.
 
 - [Architecture decision record](0001-portable-native-privileged-helper.md)
 - [Protocol version 1](privileged-helper-protocol-v1.md)
+- [Read-only management-posture provider](management-posture-provider.md)
 
 ## Security objectives
 
@@ -177,6 +181,11 @@ M2 writes only WinCur's protected protocol registry namespace.
 - [x] Block ambiguous, inaccessible, malformed, and unsupported evidence.
 - [ ] Add target-specific positive Group Policy/MDM attribution for registry
   actions only where a documented Windows provider is sufficiently reliable.
+- [x] Add read-only domain/workgroup, MDM-registration, Local GPO, and RSoP
+  fixed-target evidence with explicit health, bounds, and freshness limits.
+- [x] Keep Local GPO COM activation, `IGroupPolicyObject`, and its returned
+  `HKEY` on one dedicated STA thread; treat apartment and access failures as
+  blocking provider evidence.
 
 Phase 2C-1 intentionally does not infer organization management from domain
 join, MDM enrollment alone, or the mere presence of a registry policy value.

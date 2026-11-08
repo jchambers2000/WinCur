@@ -9,6 +9,7 @@ Companion specifications:
 
 - [Privileged-helper protocol version 1](privileged-helper-protocol-v1.md)
 - [Threat model and implementation plan](privileged-helper-threat-model-and-plan.md)
+- [Read-only management-posture provider](management-posture-provider.md)
 
 ## Context
 
@@ -198,6 +199,12 @@ UAC plus the helper confirmation because the UI is user-writable.
   ownership evidence remains ambiguous, production apply fails closed before
   confirmation. The only backend remains non-mutating and rollback remains
   unavailable.
+- Phase 2F-2 adds a bounded read-only management-posture provider using
+  documented domain, MDM-registration, Local GPO, and RSoP interfaces. It is
+  evidence only: missing policy records do not authorize remediation, RSoP
+  freshness remains unknown, and no apply or rollback path consumes it. Local
+  GPO collection runs on a dedicated STA thread so the apartment-threaded COM
+  object and its non-marshallable `HKEY` never cross a thread boundary.
 
 ## References
 
