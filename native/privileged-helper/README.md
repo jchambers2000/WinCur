@@ -1,4 +1,4 @@
-# WinCur native privileged helper — Phase 2F-2 foundation
+# WinCur native privileged helper — Phase 2F-3 foundation
 
 This directory contains the C++20/Win32 skeleton for the future
 `WinCur.PrivilegedHelper.exe`. It implements strict protocol parsing, the
@@ -174,6 +174,15 @@ the returned `HKEY`, fixed-target queries, and cleanup all occur on that same
 thread. COM apartment errors and access denial remain fail-closed provider
 results. The opt-in harness also reports a diagnostic MTA comparison, but that
 comparison does not feed production evidence or authorization.
+
+Phase 2F-3 adds a pure advisory eligibility evaluator for the three existing
+actions. It combines fixed inspection status, bounded management-posture
+evidence, explicit local-ownership evidence, and rollback-evidence quality.
+Every result is non-authorizing. PowerShell logging and Firewall remain
+ineligible, and no current production evidence path can produce an AutoRun
+candidate because positive local ownership and authoritative-current RSoP
+absence are not established. The evaluator is not called by `main.cpp`, the
+confirmation flow, transaction lifecycle, capsule code, apply, or rollback.
 
 Build the optional read-only posture harness with:
 

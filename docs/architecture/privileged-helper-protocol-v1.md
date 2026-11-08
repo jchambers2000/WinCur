@@ -445,6 +445,11 @@ matches, provider health, and evidence limitations in memory. It is not yet an
 authorization input, is not serialized into the public transaction record, and
 cannot advance a transaction lifecycle or capsule authority.
 
+Phase 2F-3 adds a pure internal eligibility evaluator. Its classifications are
+not serialized as protocol outcomes and cannot serve as confirmation,
+transaction, capsule, apply, or rollback authorization. Protocol version 1 and
+its protected result schema are unchanged.
+
 ### Future mutation-ownership extension (not implemented)
 
 The following ownership/lifecycle slots describe the later rollback phase.

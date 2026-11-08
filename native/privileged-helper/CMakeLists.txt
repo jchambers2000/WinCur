@@ -82,6 +82,7 @@ add_library(
         src/stub_backend.cpp
         src/inspection.cpp
         src/management_posture.cpp
+        src/remediation_eligibility.cpp
         src/confirmation.cpp
         src/transaction.cpp
         src/capsule.cpp
@@ -239,6 +240,23 @@ if(BUILD_TESTING)
     add_test(
         NAME privileged_helper_management_posture_windows
         COMMAND WinCur.PrivilegedHelper.ManagementPostureWindowsTests
+    )
+
+    add_executable(
+        WinCur.PrivilegedHelper.RemediationEligibilityTests
+        tests/remediation_eligibility_tests.cpp
+    )
+    target_link_libraries(
+        WinCur.PrivilegedHelper.RemediationEligibilityTests
+        PRIVATE
+            wincur_helper_core
+    )
+    wincur_harden_executable(
+        WinCur.PrivilegedHelper.RemediationEligibilityTests
+    )
+    add_test(
+        NAME privileged_helper_remediation_eligibility
+        COMMAND WinCur.PrivilegedHelper.RemediationEligibilityTests
     )
 
     add_executable(

@@ -15,6 +15,7 @@ records authoritative.
 - [Architecture decision record](0001-portable-native-privileged-helper.md)
 - [Protocol version 1](privileged-helper-protocol-v1.md)
 - [Read-only management-posture provider](management-posture-provider.md)
+- [Read-only remediation eligibility engine](remediation-eligibility-engine.md)
 
 ## Security objectives
 
@@ -186,6 +187,8 @@ M2 writes only WinCur's protected protocol registry namespace.
 - [x] Keep Local GPO COM activation, `IGroupPolicyObject`, and its returned
   `HKEY` on one dedicated STA thread; treat apartment and access failures as
   blocking provider evidence.
+- [x] Add a deterministic read-only eligibility evaluator whose candidate
+  classification is advisory only and cannot advance authorization state.
 
 Phase 2C-1 intentionally does not infer organization management from domain
 join, MDM enrollment alone, or the mere presence of a registry policy value.

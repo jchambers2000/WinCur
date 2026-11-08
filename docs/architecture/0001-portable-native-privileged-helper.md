@@ -10,6 +10,7 @@ Companion specifications:
 - [Privileged-helper protocol version 1](privileged-helper-protocol-v1.md)
 - [Threat model and implementation plan](privileged-helper-threat-model-and-plan.md)
 - [Read-only management-posture provider](management-posture-provider.md)
+- [Read-only remediation eligibility engine](remediation-eligibility-engine.md)
 
 ## Context
 
@@ -205,6 +206,9 @@ UAC plus the helper confirmation because the UI is user-writable.
   freshness remains unknown, and no apply or rollback path consumes it. Local
   GPO collection runs on a dedicated STA thread so the apartment-threaded COM
   object and its non-marshallable `HKEY` never cross a thread boundary.
+- Phase 2F-3 adds a deterministic advisory eligibility evaluator. It is not
+  connected to transaction, confirmation, capsule, apply, or rollback paths;
+  no current real-world evidence satisfies its candidate requirements.
 
 ## References
 
