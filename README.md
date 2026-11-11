@@ -1,127 +1,131 @@
 # WinCur
 
-WinCur is a native Windows 11 security assessment
-application built with Python and PySide6. It evaluates selected endpoint
-security configurations, explains each result, and turns technical evidence
-into an understandable hardening score, assessment coverage, and prioritized
-next steps.
+WinCur is a Windows 11 security assessment application that makes important
+configuration checks easier to understand. It scans selected Windows security
+settings, explains each result in plain language, and highlights the areas that
+need attention.
 
-WinCur 1.0.0 is an assessment-only release for Windows 11 x64. The portable
-build runs without Python installed, does not request administrator elevation,
-and never applies or rolls back Windows configuration changes.
+> **WinCur 1.0.0 is assessment-only.** It does not include Administrator Scan,
+> automated remediation, or automated rollback, and it does not request UAC
+> elevation.
 
-<p align="center">
-  <img src="docs/screenshots/01-dashboard.png" alt="WinCur Overview dashboard showing the configuration-hardening score, assessment coverage, and priority findings" width="100%">
+**[Download WinCur 1.0.0 for Windows 11 x64](https://github.com/jchambers2000/WinCur/releases/tag/v1.0.0)**
+
+<p align='center'>
+  <img src='docs/screenshots/overview.png' alt='WinCur 1.0.0 Overview showing a completed read-only assessment, configuration-hardening score, coverage, and priority findings' width='100%'>
 </p>
 
-<p align="center"><em>The Overview dashboard summarizes assessed configuration strength, assessment coverage, and confirmed findings without presenting the score as a guarantee of security.</em></p>
+<p align='center'><em>Overview after a completed assessment. The score covers selected configuration checks and is not a guarantee of overall security.</em></p>
 
-## Project status
+The release is a portable ZIP: extract it and launch `WinCur.exe`. Python does
+not need to be installed.
 
-- Application version: **1.0.0**
-- Scoring policy: **2.1**
-- Platform: Windows 11 x64
-- Interface: native PySide6/Qt desktop UI
-- Distribution: portable, one-directory ZIP (no installer or updater)
+## What WinCur provides
 
-The release application is assessment-only. **Administrator Scan, automated
-remediation, and automated rollback are unavailable in v1.0.0.** Legacy
-hardening research modules are
-retained in the source tree for review and future development, but are not
-reachable from the application entry point or bundled into the release build.
+- **Read-only security assessments** covering Microsoft Defender, Windows
+  Firewall, BitLocker, Secure Boot, TPM, Windows Update, UAC, local accounts,
+  SMBv1, Remote Desktop, SmartScreen, PowerShell logging, and AutoRun policy.
+- **Standard, Advanced, and Enterprise profiles** for evaluating the same
+  device against different configuration expectations.
+- **Explainable scoring** with a configuration-hardening score, assessment
+  coverage, severity, and a clear distinction between failed, unknown,
+  informational, and not-applicable checks.
+- **Detailed findings and recommendations** that explain what WinCur observed,
+  why it matters, and what to review next.
+- **Saved snapshots and comparisons** for comparing a current or historical
+  assessment with a reference selected by the user.
+- **Local activity and reports** including assessment history and HTML report
+  export.
+- **Light, Dark, and System themes** in a native PySide6/Qt desktop interface.
+
+WinCur's score measures selected configuration-hardening checks. It is not an
+overall measure or guarantee of device security and does not replace endpoint
+protection, patching, backups, monitoring, or professional security advice.
 
 ## Download and run
 
-The public release is a portable Windows 11 x64 ZIP:
-
-1. Download the ZIP from the GitHub release.
-2. Extract the complete archive to a folder you can read and write. Do not run
-   `WinCur.exe` from inside the ZIP.
-3. Keep `WinCur.exe` beside its `_internal` folder and the included notices.
-4. Launch `WinCur.exe`, then choose **Scan PC**.
+1. Open the [WinCur 1.0.0 release](https://github.com/jchambers2000/WinCur/releases/tag/v1.0.0).
+2. Download `WinCur-1.0.0-windows-x64.zip` and its published checksum file.
+3. Verify the ZIP checksum, then extract the complete archive. Do not run the
+   application from inside the ZIP.
+4. Keep `WinCur.exe`, the `_internal` folder, and the included license and
+   notice files together.
+5. Launch `WinCur.exe` and select **Scan PC**.
 
 WinCur 1.0.0 is unsigned. Windows SmartScreen or antivirus software may warn
-about a newly downloaded, unsigned application. Verify the release checksum
-and repository provenance before continuing. Do not disable SmartScreen,
-antivirus, or other Windows protections to run WinCur.
+about a newly downloaded application. Verify the release checksum and
+repository provenance before continuing. Do not disable Windows security
+protections to run WinCur.
 
-No installation, Python runtime, service, or administrator account is
-required. Moving the extracted folder is supported as long as the entire
-folder is moved together.
+## Understanding an assessment
 
-## Capabilities
+- **Configuration-hardening score** shows how the assessed checks compare with
+  the selected profile.
+- **Assessment coverage** shows how much of that profile WinCur could evaluate.
+- **Unknown** means the available evidence was insufficient; it is never
+  treated as a pass.
+- **Informational** and **Not Applicable** results are kept distinct from scored
+  failures.
 
-- **Windows security assessments:** read-only checks for Microsoft Defender,
-  Windows Firewall, BitLocker, Secure Boot, TPM, Windows Update, UAC, local
-  accounts, SMBv1, Remote Desktop, SmartScreen, PowerShell logging, and AutoRun
-  policy.
-- **Explainable results:** a configuration-hardening score, assessment coverage,
-  severity, plain-language findings, evidence, and recommended next steps.
-- **Assessment profiles:** Standard, Advanced, and Enterprise expectations with
-  explicit informational and Not Applicable treatment.
-- **Standard-user scans:** assessments run in the current process without
-  requesting administrator elevation. Checks that cannot be evaluated are
-  reported as Unknown rather than treated as passing. Secure Boot, TPM,
-  BitLocker, local-administrator membership, SMBv1, SmartScreen, and other
-  protected providers may be unavailable or incomplete depending on Windows
-  edition, permissions, management policy, and installed security products.
-- **Saved snapshots:** user-selected reference assessments for baseline
-  comparison and observed configuration-difference analysis.
-- **Local history and reporting:** persistent assessment history, hardening audit
-  records, and HTML report export with escaped and sanitized evidence.
-- **Native desktop experience:** Light, Dark, and Windows-system appearance modes
-  in a PySide6/Qt interface.
-- **Release engineering:** a portable PyInstaller development workflow with
-  unique build IDs, manifest hashes, packaging probes, and distribution checks.
+WinCur runs in the current user's security context. Some providers, including
+Secure Boot, TPM, BitLocker, local administrator membership, SMBv1, and
+SmartScreen, may be unavailable or incomplete because of Windows edition,
+permissions, device policy, installed security software, or provider behavior.
+The application reports those limitations rather than silently reusing or
+inventing results.
 
-The score measures selected configuration-hardening settings. It is not a
-guarantee that a computer is secure and does not replace endpoint protection,
-patch management, backups, monitoring, or organizational security policy.
+## Profiles
 
-## Technology
+| Profile | Purpose |
+|---|---|
+| Standard | A practical baseline for a personal Windows 11 device |
+| Advanced | Broader hardening expectations for users who want a stricter review |
+| Enterprise | Organization-oriented expectations where applicable policy context is available |
 
-- Python 3.11 or newer
-- PySide6 / Qt 6
-- Windows PowerShell and supported Windows cmdlets
-- Documented Windows registry settings and Windows APIs
-- `unittest` with mocked Windows providers
-- PyInstaller for internal one-directory build evaluation
+Profile results should be compared only when their profile and scoring-policy
+version are compatible. WinCur records that metadata with saved assessments.
 
-## Architecture
+## Snapshots, history, and reports
 
-| Area | Key modules | Responsibility |
-|---|---|---|
-| Application entry | `main.py` | GUI startup and the non-security packaging probe |
-| Desktop UI | `wincur/ui.py`, `wincur/theme.py`, `wincur/branding.py` | Navigation, views, themes, dialogs, and worker coordination |
-| Assessment checks | `wincur/checks.py` | Read-only Windows evidence collection and result classification |
-| Scoring | `wincur/scoring.py`, `wincur/scoring_config.json` | Profile-aware scoring and coverage policy |
-| Models | `wincur/models.py` | Findings, assessments, previews, and action records |
-| Snapshots and comparison | `wincur/baselines.py`, `wincur/baseline_comparison.py`, `wincur/drift.py` | Local reference snapshots and observed differences |
-| Legacy hardening research | `wincur/hardening.py`, `wincur/helper.py`, `wincur/privileges.py` | Source-only research retained for review; excluded from the assessment-only executable |
-| Persistence and reports | `wincur/storage.py`, `wincur/reporting.py`, `wincur/action_history.py` | Local durable storage and HTML export |
-| Packaging | `WinCur.spec`, `tools/` | Internal Windows build, verification, and promotion tools |
+Saved snapshots are reference assessments chosen by the user. WinCur can
+compare later assessments with a snapshot and distinguish confirmed status
+changes from cases where different permissions or evidence require review. A
+comparison does not claim when a Windows setting changed.
 
-The ordinary test suite covers assessment, scoring, persistence, UI, reporting,
-and release-boundary behavior. An additional 10 Windows
-registry integration tests are deliberately excluded from normal discovery and
-must only be run in a disposable VM.
+Assessment history, saved snapshots, preferences, legacy read-only hardening
+history, and logs are stored below `%LOCALAPPDATA%\WinCur`. Removing the
+portable application folder does not remove this local data.
 
-## Using reports and local data
-
-Use **Export Report** after a scan to choose a destination for a local HTML
-report. Reports can contain the device name, Windows version, local account
-names or SIDs, security-product names, update identifiers, timestamps, and
+HTML reports can contain the device name, Windows version, local account names
+or SIDs, security-product names, update identifiers, timestamps, and
 configuration evidence. Review a report before sharing it.
 
-WinCur stores preferences, scan history, saved snapshots, legacy read-only
-hardening history, and logs below `%LOCALAPPDATA%\WinCur`. Removing the portable
-application folder does not remove this data. WinCur does not upload it and has
-no telemetry client.
+WinCur has no telemetry client and does not upload assessment data. The Windows
+Update check uses the Windows Update Agent, which may contact the update service
+configured on the device.
 
-## Development setup
+## Screenshots
 
-Use a Windows 11 development machine or disposable VM. From the repository
-root:
+### Security Issues
+
+Review every assessed check with its severity, status, summary, explanation, and
+recommended next step. Evidence that WinCur cannot evaluate is reported as
+unknown rather than treated as passing.
+
+![WinCur 1.0.0 Security Issues page showing read-only findings, statuses, explanations, and recommendations](docs/screenshots/security-issues.png)
+
+### Activity
+
+Browse locally stored assessments with their profile, score, coverage, and
+scoring-policy metadata. Historical results remain clearly separate from the
+current device state.
+
+![WinCur 1.0.0 Activity page showing local assessment history and selected assessment details](docs/screenshots/activity.png)
+
+## Development
+
+WinCur is built with Python, PySide6/Qt, documented Windows interfaces, and a
+mocked `unittest` regression suite. From the repository root on Windows 11:
 
 ```powershell
 py -m venv .venv
@@ -130,87 +134,41 @@ py -m venv .venv
 .\.venv\Scripts\python.exe main.py
 ```
 
-Launching the application does not automatically scan or change Windows.
-Choose **Scan PC** to run the read-only assessment.
-
-## Tests
-
-Run the mocked regression suite without elevation:
+Run the non-elevated test suite with:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
-The separate registry integration harness writes only beneath a uniquely owned
-`HKEY_CURRENT_USER\Software\WinCur\IntegrationTests` namespace. Its source and
-safety gates are in `tests/integration/registry_rollback_windows.py`. Use it
-only in a disposable VM after reviewing the file.
+The public v1.0.0 executable excludes the legacy Python mutation and elevation
+modules and rejects their former command-line modes. Native privileged-helper
+work remains source-only security research and is not integrated into the
+release application. See [SECURITY.md](SECURITY.md) for the release boundary
+and current limitations.
 
-## Safety and data handling
+## Project structure
 
-- Assessments do not intentionally modify Windows configuration.
-- The release application has no automated hardening or rollback controls.
-- WinCur does not collect BitLocker recovery keys, passwords, browsing history,
-  or file contents.
-- Assessment history, snapshot data, preferences, hardening history, and logs
-  are stored locally below `%LOCALAPPDATA%\WinCur`.
-- Stored evidence can include the computer name, Windows version, local account
-  names and SIDs, security-product names, update identifiers, timestamps, and
-  configuration values.
-- WinCur has no telemetry client. The Windows Update assessment uses the
-  Windows Update Agent, which may contact the update service configured on the
-  device.
+| Area | Location |
+|---|---|
+| Application entry point | `main.py` |
+| Desktop interface and themes | `wincur/ui.py`, `wincur/theme.py`, `wincur/branding.py` |
+| Read-only assessment checks | `wincur/checks.py` |
+| Scoring policy | `wincur/scoring.py`, `wincur/scoring_config.json` |
+| Snapshots and comparisons | `wincur/baselines.py`, `wincur/baseline_comparison.py`, `wincur/drift.py` |
+| Persistence and reports | `wincur/storage.py`, `wincur/reporting.py` |
+| Packaging and verification | `WinCur.spec`, `tools/`, [PACKAGING.md](PACKAGING.md) |
+| Native helper research | `native/privileged-helper/`, `docs/architecture/` |
 
-See [SECURITY.md](SECURITY.md) for the assessment-only release boundary and the
-limitations of legacy source-only hardening research.
+- Application version: **1.0.0**
+- Scoring policy: **2.1**
+- Supported release platform: **Windows 11 x64**
 
-## Screenshots
-
-### Security Issues
-
-The checklist separates confirmed results from informational, unavailable, and
-unassessed checks. Selecting a row opens its explanation and recommended next
-step without crowding the table with raw evidence.
-
-![WinCur Security Issues checklist with status, severity, summaries, and selected finding details](docs/screenshots/02-security-issues.png)
-
-### Saved snapshot comparison
-
-A saved assessment can be used as a reference for later comparisons. Results
-distinguish observed improvements, regressions, unchanged checks, and cases
-that require review because evidence or assessment visibility differs.
-
-![WinCur Saved Snapshot Comparison showing summary counts and detailed check-by-check differences](docs/screenshots/04-snapshots.png)
-
-### Activity history
-
-Assessment and legacy action history remain local. Scan history records timestamp,
-privilege, profile, score, and coverage while clearly treating saved assessments
-as historical rather than current device state.
-
-![WinCur Activity page showing locally persisted assessment history](docs/screenshots/05-activity.png)
-
-## Packaging and redistribution
-
-[PACKAGING.md](PACKAGING.md) documents the internal PyInstaller assessment-only
-workflow. Release builds exclude the legacy mutation and elevation modules and
-explicitly reject their former command-line modes.
-
-Binary redistribution also requires the notices in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). The maintained build excludes
-unused Qt PDF, QML, Quick, and Virtual Keyboard chains. WinCur uses the GPLv3
-option for the remaining Qt/PySide components, so matching Qt 6.12.0 and Qt for
-Python 6.12.0 corresponding source must be made available with the release.
-Do not publish a binary if the release checklist in `PACKAGING.md` is incomplete.
-
-## License
+## License and notices
 
 WinCur is free and open-source software licensed under the
 **GNU General Public License, version 3 only** (`GPL-3.0-only`). See
-[`LICENSE`](LICENSE) for the complete terms and [`NOTICE.md`](NOTICE.md) for
-contributor, branding-asset, and dependency notices.
+[LICENSE](LICENSE), [NOTICE.md](NOTICE.md), and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Copyright in individual contributions remains with the respective
-contributors. The project does not claim exclusive copyright in the
-AI-generated portrait artwork.
-
+The release page includes the corresponding Qt and PySide6 source archives for
+the redistributed Qt for Python components.
