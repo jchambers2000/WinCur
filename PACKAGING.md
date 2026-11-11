@@ -1,4 +1,4 @@
-# WinCur 1.0.0 release-candidate packaging
+# WinCur 1.0.0 Windows packaging
 
 WinCur uses a maintained PyInstaller one-directory configuration. The build
 automatically includes the scoring policy and Windows version metadata; no
@@ -11,10 +11,16 @@ test, and the resulting executable is unsigned.
 ## Supported build environment
 
 - Windows 11, 64-bit
-- 64-bit CPython 3.11 or newer
-- PySide6 from `requirements.txt`
-- PyInstaller from `requirements-build.txt`
+- Validated final-release toolchain: CPython 3.14.10, PySide6 6.12.0,
+  shiboken6 6.12.0, and PyInstaller 6.22.3
 - PowerShell 5.1 or newer
+
+The complete recorded environment is in
+`packaging/validated_toolchain.json`. The dependency files retain supported
+development ranges, but the public build script fails closed when the selected
+Python, PySide6, shiboken6, or PyInstaller version differs from the validated
+release toolchain. A toolchain update requires another frozen dependency and
+license review.
 
 Create or refresh the build environment from the repository root:
 
@@ -52,6 +58,22 @@ artifacts\windows\candidates\WinCur-1.0.0-<build-id>\
   dist\
     WinCur\
       WinCur.exe
+      README.txt
+      LICENSE
+      NOTICE.md
+      THIRD_PARTY_NOTICES.md
+      validated_toolchain.json
+      frozen_dependency_inventory.json
+      build_info.json
+      licenses\
+        PYTHON-3.14.10-LICENSE.txt
+        third-party\
+          NOTICE_MANIFEST.json
+          mesa-llvmpipe-11.2.2\NOTICE.txt
+          microsoft-vc-runtime-2026\NOTICE.txt
+          pyinstaller-6.22.3\COPYING.txt
+          qt-6.12.0\...
+          pyside6-6.12.0\...
       _internal\
         wincur\scoring_config.json
         wincur\build_info.json
@@ -64,7 +86,7 @@ Exact internal Qt paths are controlled by the installed PyInstaller/PySide6
 versions. The build script locates and verifies the required files rather than
 assuming one Qt subdirectory layout.
 
-The build identifier is visible under **Settings → About WinCur**, is returned
+The build identifier is visible under **Settings > About WinCur**, is returned
 by the packaging probe, and is recorded in the manifest. Manifest resource
 paths are relative to the candidate root so moving a complete package does not
 make them misleading.
@@ -77,7 +99,7 @@ no longer needed.
 
 ## Maintained resources and entry points
 
-- `main.py` is the GUI and fixed helper-mode entry point.
+- `main.py` is the GUI and fixed non-security packaging-probe entry point.
 - `wincur/scoring_config.json` is declared in `WinCur.spec` and resolves through
   `wincur.resources` in source and frozen modes.
 - `wincur/assets/wincur_portrait.png` and `wincur/assets/wincur.ico` are the
@@ -89,8 +111,9 @@ no longer needed.
   and File Version `1.0.0.0`. No publisher or copyright owner is invented.
 - PyInstaller's maintained PySide6 hooks collect Qt binaries and plugins. The
   build script independently requires `qwindows.dll` before reporting success.
-- Frozen UAC operations relaunch `sys.executable` with one of the existing fixed
-  helper modes. They never reference `main.py` or an installed Python runtime.
+- The PyInstaller analysis explicitly excludes the legacy hardening, helper,
+  and elevation modules. The executable manifest remains `asInvoker` and the
+  application does not request UAC elevation.
 - All writable state remains below `%LOCALAPPDATA%\WinCur` or a destination
   explicitly selected by the user. The installation directory is read-only at
   runtime.
@@ -115,6 +138,12 @@ The verifier checks files and metadata, then starts only the fixed
 `--packaging-probe` mode. That mode reads the bundled scoring policy and writes
 a small result in `%TEMP%`; it does not construct the UI, run checks, request
 elevation, or invoke remediation.
+
+It also requires the portable README, WinCur license, project and third-party
+notices, validated toolchain record, exact CPython license collected from the
+build interpreter, and the complete hashed third-party notice payload. Every
+file listed by `licenses\third-party\NOTICE_MANIFEST.json` is checked for its
+expected size and SHA-256 value.
 
 ## Explicit candidate promotion
 
@@ -175,24 +204,41 @@ Use a restored disposable Windows 11 snapshot with no development Python on
 1. Copy the entire one-directory distribution.
 2. Run the distribution verifier.
 3. Start normally as a standard user and complete a read-only assessment.
-4. Cancel one Administrator scan UAC prompt and confirm the previous assessment
-   remains displayed without being relabeled as current.
-5. Approve an Administrator read-only assessment and verify helper completion.
-6. Restart and verify scan history, settings, layout, and themes.
-7. Export a report and verify its version and policy metadata.
-8. Relocate the complete directory and repeat the probe and standard scan.
-9. Repeat from a read-only copy at 100%, 125%, and 150% display scaling.
+4. Confirm there is no Administrator Scan, Fix Workspace, Apply, Preview, or
+   Rollback control and that normal use produces no UAC prompt.
+5. Restart and verify scan history, legacy action history (if present), settings,
+   layout, and themes.
+6. Export a report and verify its version and policy metadata.
+7. Relocate the complete directory and repeat the probe and standard scan.
+8. Repeat from a read-only copy at 100%, 125%, and 150% display scaling.
+9. Invoke each removed `--helper-*` mode and confirm it exits nonzero without
+   opening the GUI or requesting elevation.
 
-Live remediation and rollback validation is a separate activity. It requires a
-fresh VM snapshot, explicit preview and confirmation, independent read-only
-verification, and the procedures in the README. Never treat a successful build
-or packaging probe as proof that a security change works.
+The public assessment-only build must not include or exercise remediation,
+rollback, or elevation functionality. Never treat a successful build or
+packaging probe as proof that a security change works.
+
+## Public ZIP staging
+
+Do not ZIP the candidate root, `work` directory, or repository. After the
+candidate passes independent verification and disposable-VM acceptance, stage
+only the contents of `dist\WinCur` so `WinCur.exe`, `_internal`, `README.txt`,
+notices, licenses, and metadata are at the archive root. Generate the ZIP into
+a new, uniquely named staging directory and record both the executable and ZIP
+SHA-256 values. Never overwrite or promote a previous artifact automatically.
+
+The public GitHub release must also provide the exact Qt 6.12.0 and Qt for
+Python 6.12.0 corresponding-source archives listed in
+`THIRD_PARTY_NOTICES.md`, with their SHA-256 hashes independently verified.
+Those large upstream source archives are deliberately not committed to this
+repository and are not embedded in the portable application ZIP.
 
 ## Unsigned executable and future signing
 
-WinCur 1.0.0 release candidates are not digitally signed. Windows SmartScreen or antivirus products
+WinCur 1.0.0 is not digitally signed. Windows SmartScreen or antivirus products
 may warn about a new unsigned executable, and moving or rebuilding it changes
-its hash. Do not suppress those warnings programmatically.
+its hash. Do not suppress those warnings programmatically and do not advise
+users to disable Windows security protections.
 
 A future release may add Authenticode signing after a publisher identity,
 certificate custody process, timestamp service, release approval process, and
@@ -206,8 +252,10 @@ publisher-trust claim.
 - PyInstaller output is not guaranteed to be byte-for-byte reproducible because
   Python, Qt, PyInstaller, PE timestamps, and toolchain inputs affect binaries.
   `BUILD_MANIFEST.json` records hashes and versions for traceability.
-- `ShellExecuteW` does not provide the parent a helper process handle. WinCur
-  retains its existing 180-second result timeout and cannot forcibly terminate
-  an elevated helper that outlives it.
+- Legacy elevated-helper source remains in the repository for research but is
+  excluded from the assessment-only distribution.
 - Authenticode signing, an installer, automatic updates, CI publishing, and
   long-term artifact retention remain out of scope.
+- Public binary publication remains blocked until the exact Qt/PySide source
+  archives and Microsoft Visual C++ redistribution entitlement identified in
+  `THIRD_PARTY_NOTICES.md` have been reviewed and satisfied.

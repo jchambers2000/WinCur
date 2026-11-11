@@ -3,9 +3,8 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -16,8 +15,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QWidget
 
 from wincur.history_analysis import history_point
-from wincur.hardening import ACTIONS, HardeningEngine
-from wincur.models import ActionAvailability, AssessmentScore, CheckResult, CheckStatus, ScanRecord
+from wincur.models import AssessmentScore, CheckResult, CheckStatus, ScanRecord
 from wincur.theme import AppearanceMode, ThemeManager
 from wincur.ui import LayoutStateStore, ResponsiveSplitter, TrendChart, WinCurWindow, evidence_preview, friendly_timestamp
 
@@ -53,7 +51,7 @@ class ConsolidatedUiTests(unittest.TestCase):
         self.assertEqual(len(window.findChildren(QTabWidget)), 0)
         self.assertEqual([button.text() for button in window.activity_view_buttons], ["Scan History", "Hardening Audit"]); self.assertEqual(window.activity_pages.count(), 2); self.assertEqual(window.activity_pages.currentIndex(), 0)
         window.activity_view_buttons[1].click(); self.assertEqual(window.activity_pages.currentIndex(), 1)
-        window.nav_buttons[2].click(); self.assertEqual(window.page_subtitle.text(), "Review previous security assessments and hardening activity."); window.close()
+        window.nav_buttons[2].click(); self.assertEqual(window.page_subtitle.text(), "Review previous security assessments and legacy action history."); window.close()
 
     def test_snapshot_management_is_modal_without_new_primary_navigation(self) -> None:
         window = self.make_window(); button_texts = {button.text() for button in window.findChildren(type(window.scan_button))}
@@ -78,11 +76,11 @@ class ConsolidatedUiTests(unittest.TestCase):
         window = self.make_window(actions=[action]); headers = [window.action_history_table.horizontalHeaderItem(i).text() for i in range(window.action_history_table.columnCount())]
         self.assertEqual(headers, ["Date and time", "Action", "Operation type", "Result", "Verification / rollback"]); self.assertEqual(window.action_history_table.item(0, 2).text(), "Hardening action"); self.assertEqual(window.action_history_table.item(0, 3).text(), "Denied"); self.assertNotIn("Success", " ".join(window.action_history_table.item(0, i).text() for i in range(5))); window.close()
 
-    def test_malformed_legacy_audit_record_cannot_appear_rollback_actionable(self) -> None:
+    def test_malformed_legacy_audit_record_remains_read_only(self) -> None:
         record = {"timestamp_utc": "2026-10-29T12:30:00+00:00", "action_id": "disable_autorun", "outcome": "Success", "rollback_available": True, "original_configuration": {"values": []}, "requested_configuration": {"recommended": "legacy"}}
         window = self.make_window(actions=[record])
-        with patch("wincur.ui.load_action_history", return_value=[record]): window.action_history_table.selectRow(0); window._update_rollback_button()
-        self.assertFalse(window.rollback_button.isEnabled()); self.assertIn("schema", window.rollback_button.toolTip().lower()); window.close()
+        window.action_history_table.selectRow(0)
+        self.assertFalse(hasattr(window, "rollback_button")); self.assertEqual(window.action_history_table.item(0, 3).text(), "Success"); window.close()
 
     def test_page_changes_clear_highlight_but_preserve_delete_checkbox(self) -> None:
         window = self.make_window([saved_record()]); window.show(); window._set_page(2); window.history_table.selectRow(0); window.history_table.item(0, 0).setCheckState(Qt.CheckState.Checked)
@@ -92,61 +90,18 @@ class ConsolidatedUiTests(unittest.TestCase):
         record = saved_record(); window = self.make_window([record]); window._set_page(2); window.history_table.selectRow(0); window._view_selected_history()
         self.assertEqual(window.pages.currentIndex(), 0); self.assertIn("Historical", window.current_record.assessment_source); self.assertIn("not a current scan", window.assessment_source_label.text()); window.close()
 
-    def test_problem_first_findings_and_fix_workspace_remain_intact(self) -> None:
+    def test_problem_first_findings_and_recommendations_remain_intact(self) -> None:
         record = issue_record(); window = self.make_window([record]); window._view_history_record(record)
         self.assertEqual(window.findings_panel.value.text(), "1"); self.assertEqual(window.tree.topLevelItemCount(), 1); self.assertTrue(window.technical_finding_details.isHidden()); window._toggle_finding_technical(); self.assertIn("raw technical evidence", window.technical_finding_details.toPlainText())
-        window._open_finding_fix(); self.assertEqual(window.pages.currentIndex(), 1); self.assertEqual(window.issues_pages.currentIndex(), 1); self.assertTrue(window.issues_view_buttons[1].isChecked()); self.assertFalse(window.apply_button.isEnabled()); window.close()
+        self.assertIn("Recommended next step", window.details.toPlainText()); self.assertFalse(hasattr(window, "issues_pages")); self.assertFalse(hasattr(window, "apply_button")); window.close()
 
-    def test_hardening_refresh_clears_stale_preview_and_marks_transitions(self) -> None:
-        window = self.make_window(); action_ids = list(ACTIONS); selected = window.action_tree.topLevelItem(0); window.action_tree.setCurrentItem(selected)
-        window.previews = [SimpleNamespace(action_id=action_ids[0])]; window.validated_preview = window.previews[0]; window.apply_button.setEnabled(True)
-        window._mark_previews_pending(action_ids)
-        self.assertEqual(window.previews, []); self.assertFalse(window.apply_button.isEnabled())
-        self.assertTrue(all(window.action_tree.topLevelItem(row).text(2) == "Reading configuration" for row in range(window.action_tree.topLevelItemCount())))
-        preview = HardeningEngine._preview(ACTIONS[action_ids[0]], ActionAvailability.MANAGED, "Current state", "Confirmed management evidence")
-        window._previews_ready([preview])
-        self.assertEqual(selected.text(2), ActionAvailability.MANAGED.value)
-        self.assertEqual(window.action_tree.topLevelItem(1).text(2), "Refresh failed")
-        self.assertIs(window.action_tree.currentItem(), selected); self.assertFalse(window.apply_button.isEnabled()); window.close()
-
-    def test_hardening_refresh_failure_never_retains_actionable_state(self) -> None:
-        window = self.make_window(); action_id = next(iter(ACTIONS)); item = window.action_tree.topLevelItem(0); window.action_tree.setCurrentItem(item)
-        window.previews = [SimpleNamespace(action_id=action_id)]; window.validated_preview = window.previews[0]; window.apply_button.setEnabled(True); window._mark_previews_pending([action_id])
-        with patch("wincur.ui.QMessageBox.warning"): window._previews_failed("provider failed")
-        self.assertEqual(item.text(2), "Refresh failed"); self.assertEqual(item.text(3), "Configuration unavailable")
-        self.assertIsNone(window.validated_preview); self.assertFalse(window.apply_button.isEnabled()); self.assertEqual(window.preview_status_title.text(), "Preview failed"); window.close()
-
-    def test_apply_explains_explicit_preview_requirement_and_completion(self) -> None:
-        window = self.make_window(); item = window.action_tree.topLevelItem(0); window.action_tree.setCurrentItem(item); window._show_action(item, None)
-        self.assertEqual(window.preview_status_title.text(), "Preview required before applying")
-        self.assertEqual(window.preview_status_text.text(), "Review the proposed changes before applying this remediation. No changes will be made during the preview.")
-        self.assertFalse(window.apply_button.isEnabled()); self.assertEqual(window.apply_button.toolTip(), "Preview this remediation before applying it.")
-        action_id = str(item.data(0, Qt.ItemDataRole.UserRole)); preview = HardeningEngine._preview(ACTIONS[action_id], ActionAvailability.AVAILABLE, "Current state", "Not managed", token="preview-token", created_utc=datetime.now(timezone.utc).isoformat())
-        window.preview_mode = "selected"; window.preview_request_ids = [action_id]; window._previews_ready([preview])
-        self.assertEqual(window.preview_status_title.text(), "Preview complete"); self.assertEqual(window.preview_status_text.text(), "This action is ready for confirmation.")
-        self.assertTrue(window.apply_button.isEnabled()); self.assertIn("explicit confirmation", window.apply_button.toolTip()); window.close()
-
-    def test_preview_status_updates_when_switching_to_blocked_action(self) -> None:
-        window = self.make_window(); first = window.action_tree.topLevelItem(0); second = window.action_tree.topLevelItem(1)
-        first_id = str(first.data(0, Qt.ItemDataRole.UserRole)); second_id = str(second.data(0, Qt.ItemDataRole.UserRole))
-        available = HardeningEngine._preview(ACTIONS[first_id], ActionAvailability.AVAILABLE, "Current", "Not managed", token="ready", created_utc=datetime.now(timezone.utc).isoformat())
-        managed = HardeningEngine._preview(ACTIONS[second_id], ActionAvailability.MANAGED, "Current", "Matching Group Policy settings=1", token="blocked", created_utc=datetime.now(timezone.utc).isoformat())
-        window.previews = [available, managed]; window._accept_validated_preview(available)
-        window.action_tree.setCurrentItem(first); window._show_action(first, None); self.assertEqual(window.preview_status_title.text(), "Preview complete"); self.assertTrue(window.apply_button.isEnabled())
-        window.action_tree.setCurrentItem(second); window._show_action(second, first); self.assertEqual(window.preview_status_title.text(), "Action blocked — managed setting"); self.assertIn("Matching Group Policy", window.preview_status_text.text()); self.assertFalse(window.apply_button.isEnabled()); self.assertEqual(window.apply_button.toolTip(), "Preview this remediation before applying it.")
+    def test_security_issues_has_no_mutation_surface(self) -> None:
+        window = self.make_window(); button_texts = {button.text() for button in window.findChildren(type(window.scan_button))}
+        for removed in ("Fix workspace", "Preview Selected Action", "Apply Selected Action", "View Available Fix", "Rollback Selected Action"):
+            self.assertNotIn(removed, button_texts)
+        for removed_attribute in ("action_tree", "preview_selected_button", "apply_button", "rollback_button"):
+            self.assertFalse(hasattr(window, removed_attribute))
         window.close()
-
-    def test_expired_preview_requires_a_new_preview(self) -> None:
-        window = self.make_window(); item = window.action_tree.topLevelItem(0); action_id = str(item.data(0, Qt.ItemDataRole.UserRole))
-        preview = HardeningEngine._preview(ACTIONS[action_id], ActionAvailability.AVAILABLE, "Current", "Not managed", token="ready", created_utc=datetime.now(timezone.utc).isoformat())
-        window.previews = [preview]; window._accept_validated_preview(preview); window.action_tree.setCurrentItem(item); window._show_action(item, None); self.assertTrue(window.apply_button.isEnabled())
-        window._expire_validated_preview(); self.assertFalse(window.apply_button.isEnabled()); self.assertEqual(window.preview_status_title.text(), "Preview required again"); self.assertIn("expired", window.preview_status_text.text()); window.close()
-
-    def test_already_stale_preview_is_never_authorized(self) -> None:
-        window = self.make_window(); item = window.action_tree.topLevelItem(0); action_id = str(item.data(0, Qt.ItemDataRole.UserRole))
-        stale_time = (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat(); preview = HardeningEngine._preview(ACTIONS[action_id], ActionAvailability.AVAILABLE, "Current", "Not managed", token="stale", created_utc=stale_time)
-        window.previews = [preview]; window._accept_validated_preview(preview); window.action_tree.setCurrentItem(item); window._show_action(item, None)
-        self.assertIsNone(window.validated_preview); self.assertFalse(window.apply_button.isEnabled()); self.assertEqual(window.preview_status_title.text(), "Preview required again"); window.close()
 
     def test_unknown_is_not_counted_as_a_confirmed_finding(self) -> None:
         record = issue_record(CheckStatus.UNKNOWN); window = self.make_window([record]); window._view_history_record(record)
@@ -181,7 +136,7 @@ class ConsolidatedUiTests(unittest.TestCase):
         self.assertEqual(window.findings_splitter.orientation(), Qt.Orientation.Horizontal)
         self.assertEqual(window.findings_list_panel.geometry().top(), window.finding_detail_panel.geometry().top())
         self.assertLessEqual(window.detail_title.geometry().top(), window.current_status_filter.geometry().bottom())
-        self.assertTrue(window.finding_technical_button.isVisible()); self.assertTrue(window.finding_fix_button.isVisible()); window.close()
+        self.assertTrue(window.finding_technical_button.isVisible()); self.assertTrue(window.settings_button.isVisible()); window.close()
 
     def test_advanced_finding_filters_remain_optional_and_resettable(self) -> None:
         record = issue_record(); window = self.make_window([record]); window._view_history_record(record)
@@ -207,14 +162,14 @@ class ConsolidatedUiTests(unittest.TestCase):
     def test_window_resize_preserves_finding_selection_and_reachable_actions(self) -> None:
         record = issue_record(); window = self.make_window([record]); window.show(); window._view_history_record(record); window._set_page(1); window.current_status_filter.setCurrentText("All Checks"); window.finding_category_combo.setCurrentText("Attack Surface"); window._toggle_finding_technical()
         for width, height, orientation in ((900, 640, Qt.Orientation.Vertical), (1024, 768, Qt.Orientation.Vertical), (1280, 800, Qt.Orientation.Vertical), (1600, 900, Qt.Orientation.Horizontal), (1024, 768, Qt.Orientation.Vertical)):
-            window.resize(width, height); self.app.processEvents(); self.assertEqual(window.findings_splitter.orientation(), orientation); self.assertIsNotNone(window.tree.currentItem()); self.assertEqual(window.tree.currentItem().data(0, Qt.ItemDataRole.UserRole), 0); self.assertEqual(window.current_status_filter.currentText(), "All Checks"); self.assertEqual(window.finding_category_combo.currentText(), "Attack Surface"); self.assertFalse(window.technical_finding_details.isHidden()); self.assertTrue(window.finding_technical_button.isVisible()); self.assertTrue(window.finding_fix_button.isVisible()); self.assertTrue(window.settings_button.isVisible())
+            window.resize(width, height); self.app.processEvents(); self.assertEqual(window.findings_splitter.orientation(), orientation); self.assertIsNotNone(window.tree.currentItem()); self.assertEqual(window.tree.currentItem().data(0, Qt.ItemDataRole.UserRole), 0); self.assertEqual(window.current_status_filter.currentText(), "All Checks"); self.assertEqual(window.finding_category_combo.currentText(), "Attack Surface"); self.assertFalse(window.technical_finding_details.isHidden()); self.assertTrue(window.finding_technical_button.isVisible()); self.assertTrue(window.settings_button.isVisible())
             if width == 900:
                 self.assertGreaterEqual(window.tree.height(), 150); scroll = window.current_issues_scroll.verticalScrollBar(); self.assertGreater(scroll.maximum(), 0); scroll.setValue(scroll.maximum()); self.app.processEvents(); center = window.settings_button.mapTo(window.current_issues_scroll.viewport(), window.settings_button.rect().center()); self.assertTrue(window.current_issues_scroll.viewport().rect().contains(center))
         self.assertGreaterEqual(window.technical_finding_details.height(), 70); window._toggle_finding_technical(); self.assertTrue(window.technical_finding_details.isHidden()); window.close()
 
     def test_compact_empty_assessment_keeps_details_and_controls_reachable(self) -> None:
         window = self.make_window(); window.resize(1024, 768); window.show(); window._set_page(1); self.app.processEvents()
-        self.assertEqual(window.findings_splitter.orientation(), Qt.Orientation.Vertical); self.assertEqual(window.tree.topLevelItemCount(), 0); self.assertTrue(window.detail_title.isVisible()); self.assertTrue(window.finding_technical_button.isVisible()); self.assertTrue(window.finding_fix_button.isVisible()); window.close()
+        self.assertEqual(window.findings_splitter.orientation(), Qt.Orientation.Vertical); self.assertEqual(window.tree.topLevelItemCount(), 0); self.assertTrue(window.detail_title.isVisible()); self.assertTrue(window.finding_technical_button.isVisible()); self.assertTrue(window.settings_button.isVisible()); window.close()
 
     def test_medium_table_and_maximized_wide_geometry_remain_readable(self) -> None:
         record = issue_record(CheckStatus.UNKNOWN); window = self.make_window([record]); window.show(); window._view_history_record(record); window._set_page(1); window.current_status_filter.setCurrentText("Could Not Assess")

@@ -1,0 +1,52 @@
+Microsoft Visual C++ v14 Runtime Components
+============================================
+
+WinCur's portable Windows distribution includes the following Microsoft
+Visual C++ release-runtime DLL families required by CPython, PySide6, and Qt:
+
+  MSVCP140.dll
+  MSVCP140_1.dll
+  MSVCP140_2.dll
+  VCRUNTIME140.dll
+  VCRUNTIME140_1.dll
+
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+Separate proprietary components
+--------------------------------
+
+These DLLs are proprietary Microsoft components. They are separate works
+aggregated with WinCur for runtime interoperability. They are not part of
+WinCur's GPL-3.0-only covered source code, and WinCur's GPL license grant does
+not apply to them. Nothing in this notice limits the rights granted by
+GPL-3.0-only for WinCur's GPL-covered code.
+
+Use and redistribution of the Microsoft components are governed by the
+applicable Microsoft Software License Terms and Visual Studio 2026
+Distributable Code list. By using or redistributing these Microsoft
+components, you agree to comply with those Microsoft terms. Do not distribute
+the Microsoft components as a stand-alone offering, modify them, imply
+Microsoft endorsement, or apply WinCur's GPL license to them. Downstream
+redistribution must keep the Microsoft components with an application that
+provides significant primary functionality and must preserve this separate
+licensing notice.
+
+Official terms and redistribution list
+--------------------------------------
+
+Microsoft Visual Studio Community 2026 license terms:
+https://visualstudio.microsoft.com/license-terms/vs2026-ga-community/
+
+Microsoft Diagnostic and Build Tools for Visual Studio 2026 license terms:
+https://visualstudio.microsoft.com/license-terms/vs2026-ga-diagnostic-buildtools/
+
+Microsoft Visual C++ V14 Redistributable and Runtime 2026 license terms:
+https://visualstudio.microsoft.com/license-terms/vs2026-ga-visualcpp-v14-redist-runtime/
+
+Visual Studio 2026 Distributable Code list:
+https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution
+
+Visual C++ redistribution guidance:
+https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files
+
+No Microsoft trademark license or endorsement is granted or implied.

@@ -5,8 +5,6 @@ import logging
 import os
 import subprocess
 import tempfile
-import time
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from wincur import checks, privileges
+from wincur import checks
 from wincur.action_history import load_action_history
 from wincur.checks import PowerShellRunner, check_autorun, check_powershell_logging
 from wincur.logging_setup import configure_logging
@@ -95,12 +93,12 @@ class ReliabilityBoundaryTests(unittest.TestCase):
             for handler in logger.handlers: handler.close()
             logger.handlers = original
 
-    def test_frozen_elevation_uses_executable_without_source_main(self) -> None:
-        calls = []; shell32 = types.SimpleNamespace(ShellExecuteW=lambda *args: calls.append(args) or 33)
-        with patch.object(privileges.os, "name", "nt"), patch.object(privileges.sys, "frozen", True, create=True), patch.object(privileges.ctypes, "windll", types.SimpleNamespace(shell32=shell32), create=True):
-            started, _ = privileges.launch_elevated_helper(["--helper-scan", "Standard", "result.json"])
-        self.assertTrue(started); self.assertEqual(Path(calls[0][2]), Path(privileges.sys.executable).resolve())
-        self.assertNotIn("main.py", calls[0][3]); self.assertIn("--helper-scan", calls[0][3])
+    def test_production_entry_and_ui_do_not_import_elevation_module(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        for path in (root / "main.py", root / "wincur" / "ui.py"):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("wincur.privileges", source)
+            self.assertNotIn("launch_elevated_helper", source)
 
 
 class ReliabilityUiTests(unittest.TestCase):
@@ -131,13 +129,9 @@ class ReliabilityUiTests(unittest.TestCase):
         self.assertTrue(self.window.export_button.isEnabled())
         self.assertIn("no new assessment", self.window.scan_message.text())
 
-    def test_malformed_helper_result_does_not_create_assessment(self) -> None:
-        result_path = self.root / "helper.json"; result_path.write_text("[]", encoding="utf-8")
-        self.window.pending_path = result_path; self.window.pending_kind = "scan"; self.window.pending_started = time.monotonic(); self.window.action_busy = True
-        with patch.object(QMessageBox, "warning") as warning:
-            self.window._poll_helper()
-        self.assertIsNone(self.window.current_record); self.assertFalse(self.window.action_busy)
-        self.assertIn("invalid result object", warning.call_args.args[2])
+    def test_window_has_no_helper_polling_or_elevation_state(self) -> None:
+        for removed in ("_poll_helper", "pending_path", "pending_kind", "action_busy", "elevated_button"):
+            self.assertFalse(hasattr(self.window, removed))
 
 
 if __name__ == "__main__": unittest.main()

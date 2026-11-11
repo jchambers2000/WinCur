@@ -38,18 +38,41 @@ a = Analysis(
         (str(build_info), "wincur"),
     ],
     hiddenimports=[
-        "wincur.helper",
-        "wincur.hardening",
         "wincur.packaging_probe",
         "wincur.ui",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "wincur.hardening",
+        "wincur.helper",
+        "wincur.privileges",
+    ],
     noarchive=False,
     optimize=0,
 )
+
+# QtGui's generic plugin collection includes PDF image handling and the Qt
+# Virtual Keyboard input context even though WinCur is a Qt Widgets application
+# and imports neither feature. Remove only those fixed plugin chains; retain the
+# Windows platform, image, TLS, style, OpenGL, and software-rendering support.
+unused_qt_runtime = {
+    "PySide6/Qt6Pdf.dll",
+    "PySide6/Qt6Qml.dll",
+    "PySide6/Qt6QmlMeta.dll",
+    "PySide6/Qt6QmlModels.dll",
+    "PySide6/Qt6QmlWorkerScript.dll",
+    "PySide6/Qt6Quick.dll",
+    "PySide6/Qt6VirtualKeyboard.dll",
+    "PySide6/plugins/imageformats/qpdf.dll",
+    "PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll",
+}
+a.binaries = [
+    entry
+    for entry in a.binaries
+    if entry[0].replace("\\", "/") not in unused_qt_runtime
+]
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -63,6 +86,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    uac_admin=False,
     disable_windowed_traceback=False,
     version=str(version_resource),
     icon=str(icon_resource),

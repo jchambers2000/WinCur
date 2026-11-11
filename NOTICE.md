@@ -30,9 +30,28 @@ the provider of the AI system or any other third party.
 
 ## Dependencies
 
-Third-party Python packages are not vendored in this source repository. They
-are installed separately from the dependency files and remain subject to
-their respective upstream licenses. In particular, PySide6/Qt is a runtime
-dependency and PyInstaller is an optional build-time dependency. Consult the
-upstream projects' license terms before redistributing a binary build.
+Source-development dependencies are installed separately and remain subject to
+their upstream licenses. A frozen Windows build redistributes a more specific
+set of runtime components, including CPython, Qt, PySide6, shiboken6, OpenSSL,
+Microsoft Visual C++ runtime libraries, and the PyInstaller bootloader.
+
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) records the exact versions
+observed in the validated toolchain, the files collected by PyInstaller, the
+applicable notices, and the corresponding-source requirement for the GPLv3 Qt
+components. The portable archive must include this notice, WinCur's `LICENSE`,
+the CPython license file collected from the exact interpreter used to build,
+and `licenses/third-party/NOTICE_MANIFEST.json` with every notice file listed
+by that integrity manifest. The generated `BUILD_MANIFEST.json` and
+`build_info.json` record the particular build.
+
+No trademark license or endorsement is implied by naming a third-party
+component. Third-party copyrights remain with their respective holders.
+
+The Microsoft Visual C++ runtime DLLs in a portable Windows build are separate
+proprietary components aggregated with WinCur for runtime interoperability.
+They are not licensed under GPL-3.0-only. Their separate terms apply only to
+those Microsoft components and do not limit the GPL rights granted for
+WinCur's GPL-covered code. See
+`licenses/third-party/microsoft-vc-runtime-2026/NOTICE.txt` in the portable
+distribution.
 

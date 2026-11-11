@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +11,6 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from wincur.baselines import BaselineCollection, BaselineStore, SecurityBaseline
-from wincur.helper import apply_action, rollback_action
 from wincur.models import AssessmentScore, CheckResult, CheckStatus, ScanRecord
 from wincur.reporting import export_html
 from wincur.scoring import load_scoring_config
@@ -73,20 +73,16 @@ class ReportDurabilityTests(unittest.TestCase):
             self.assertFalse(destination.exists())
 
 
-class HelperInputCleanupTests(unittest.TestCase):
-    def test_malformed_apply_request_is_consumed_without_running_remediation(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            request = Path(directory) / "request.json"; output = Path(directory) / "output.json"
-            request.write_text("{not-json", encoding="utf-8")
-            self.assertEqual(apply_action("autorun", request, output), 1)
-            self.assertFalse(request.exists()); self.assertFalse(json.loads(output.read_text(encoding="utf-8"))["ok"])
-
-    def test_malformed_rollback_record_is_consumed_without_running_rollback(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            request = Path(directory) / "record.json"; output = Path(directory) / "output.json"
-            request.write_text("[] trailing", encoding="utf-8")
-            self.assertEqual(rollback_action("autorun", request, output), 1)
-            self.assertFalse(request.exists()); self.assertFalse(json.loads(output.read_text(encoding="utf-8"))["ok"])
+class AssessmentOnlyEntryPointTests(unittest.TestCase):
+    def test_removed_mutation_modes_cannot_reach_gui_or_helpers(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        for mode in ("--helper-action", "--helper-rollback", "--helper-preview", "--helper-scan"):
+            completed = subprocess.run(
+                [sys.executable, str(root / "main.py"), mode], cwd=root,
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("unrecognized arguments", completed.stderr)
 
 
 class HistoryWorkerBoundaryTests(unittest.TestCase):

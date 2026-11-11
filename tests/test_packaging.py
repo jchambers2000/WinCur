@@ -5,13 +5,13 @@ import hashlib
 import os
 import subprocess
 import struct
+import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from wincur import APP_VERSION, privileges, resources
+from wincur import APP_VERSION, resources
 from wincur.build_info import DEVELOPMENT_BUILD_ID, load_build_info
 from wincur.action_history import default_action_history_path
 from wincur.baselines import default_baseline_path
@@ -36,11 +36,14 @@ class PackagingConfigurationTests(unittest.TestCase):
         self.assertIn('(str(build_info), "wincur")', spec)
         self.assertIn("COLLECT(", spec)
         self.assertIn("windows_version_info.txt", spec)
+        self.assertIn("uac_admin=False", spec)
+        for unused_qt in ("Qt6Pdf.dll", "Qt6Qml.dll", "Qt6Quick.dll", "Qt6VirtualKeyboard.dll", "qpdf.dll", "qtvirtualkeyboardplugin.dll"):
+            self.assertIn(unused_qt, spec)
         self.assertNotIn("onefile", spec.casefold())
 
     def test_build_script_uses_isolated_outputs_and_validates_runtime_files(self) -> None:
         script = (ROOT / "tools" / "build_windows.ps1").read_text(encoding="utf-8")
-        for required in ("WinCur.spec", "scoring_config.json", "wincur_portrait.png", "wincur.ico", "qwindows.dll", "packaging-probe.json", "BUILD_MANIFEST.json", "build_info.json"):
+        for required in ("WinCur.spec", "scoring_config.json", "wincur_portrait.png", "wincur.ico", "qwindows.dll", "packaging-probe.json", "BUILD_MANIFEST.json", "build_info.json", "THIRD_PARTY_NOTICES.md", "PYTHON-3.14.10-LICENSE.txt", "validated_toolchain.json", "frozen_dependency_inventory.json", "third_party_notices", "NOTICE_MANIFEST.json", "mesa-llvmpipe-11.2.2", "microsoft-vc-runtime-2026", "pyinstaller-6.22.3"):
             self.assertIn(required, script)
         self.assertIn('artifacts\\windows\\candidates', script)
         self.assertIn('"WinCur-$version-$buildId"', script)
@@ -52,6 +55,63 @@ class PackagingConfigurationTests(unittest.TestCase):
         self.assertNotIn("Remove-Item", script)
         self.assertNotIn("generate_brand_assets.py", script)
         self.assertIn("branding_hashes.json", script)
+        self.assertIn("PyInstaller.utils.cliutils.archive_viewer", script)
+        for forbidden in ("wincur.helper", "wincur.hardening", "wincur.privileges"):
+            self.assertIn(forbidden, script)
+        self.assertIn("unused_qt_runtime_check", script)
+
+    def test_third_party_notice_payload_is_complete_and_hash_validated(self) -> None:
+        payload = ROOT / "packaging" / "third_party_notices"
+        manifest = json.loads((payload / "NOTICE_MANIFEST.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["schema_version"], 1)
+        self.assertEqual(manifest["qt_version"], "6.12.0")
+        self.assertEqual(manifest["pyside_version"], "6.12.0")
+        self.assertGreaterEqual(len(manifest["qt_attributions"]), 50)
+        inventory = json.loads((ROOT / "packaging" / "frozen_dependency_inventory.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            hashlib.sha256((payload / "NOTICE_MANIFEST.json").read_bytes()).hexdigest().upper(),
+            inventory["third_party_notice_payload"]["manifest_sha256"],
+        )
+        paths = {entry["path"] for entry in manifest["files"]}
+        self.assertIn("mesa-llvmpipe-11.2.2/NOTICE.txt", paths)
+        self.assertIn("microsoft-vc-runtime-2026/NOTICE.txt", paths)
+        self.assertIn("pyinstaller-6.22.3/COPYING.txt", paths)
+        self.assertTrue(any(path.startswith("qt-6.12.0/attributions/") for path in paths))
+        self.assertTrue(any(path.startswith("pyside6-6.12.0/") for path in paths))
+        for entry in manifest["files"]:
+            target = payload / entry["path"]
+            self.assertTrue(target.is_file(), entry["path"])
+            self.assertEqual(target.stat().st_size, entry["size"], entry["path"])
+            self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), entry["sha256"], entry["path"])
+
+        verifier = (ROOT / "tools" / "verify_windows_dist.ps1").read_text(encoding="utf-8")
+        self.assertIn("Assert-ThirdPartyNoticePayload", verifier)
+        self.assertIn("third-party\\NOTICE_MANIFEST.json", verifier)
+        self.assertIn("Third-party notice file failed integrity validation", verifier)
+
+        microsoft_notice = (payload / "microsoft-vc-runtime-2026" / "NOTICE.txt").read_text(encoding="utf-8")
+        self.assertIn("separate works", microsoft_notice)
+        self.assertIn("WinCur's GPL license grant does", microsoft_notice)
+        self.assertIn("not apply to them", microsoft_notice)
+        self.assertIn("Nothing in this notice limits the rights granted", microsoft_notice)
+        self.assertIn("Visual Studio 2026 Distributable Code list", microsoft_notice)
+
+    def test_public_release_documents_and_validated_toolchain_are_declared(self) -> None:
+        notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        toolchain = json.loads((ROOT / "packaging" / "validated_toolchain.json").read_text(encoding="utf-8"))
+        portable = (ROOT / "packaging" / "PORTABLE_README.txt").read_text(encoding="utf-8")
+        inventory = json.loads((ROOT / "packaging" / "frozen_dependency_inventory.json").read_text(encoding="utf-8"))
+        self.assertEqual(toolchain["application_version"], "1.0.0")
+        self.assertEqual(toolchain["scoring_policy"], "2.1")
+        self.assertEqual(toolchain["validated_environment"]["python"], "3.14.10")
+        self.assertEqual(toolchain["validated_environment"]["pyside6"], "6.12.0")
+        self.assertEqual(toolchain["validated_environment"]["pyinstaller"], "6.22.3")
+        self.assertIn("Qt6Widgets.dll", inventory["qt_libraries"])
+        self.assertIn("Qt6VirtualKeyboard.dll", inventory["explicitly_excluded_qt"])
+        self.assertIn("qt-everywhere-src-6.12.0.zip", notices)
+        self.assertIn("pyside-setup-everywhere-src-6.12.0.zip", notices)
+        self.assertIn("Administrator Scan", portable)
+        self.assertIn("unsigned", portable.casefold())
 
     def test_promotion_is_explicit_verified_and_never_overwrites(self) -> None:
         script = (ROOT / "tools" / "promote_windows_candidate.ps1").read_text(encoding="utf-8")
@@ -124,13 +184,31 @@ class PackagingConfigurationTests(unittest.TestCase):
             missing = Path(directory) / "missing.json"
             with self.assertRaises(FileNotFoundError): load_scoring_config(missing)
 
-    def test_frozen_helper_preserves_fixed_arguments_and_quotes_paths(self) -> None:
-        calls = []; shell32 = types.SimpleNamespace(ShellExecuteW=lambda *args: calls.append(args) or 33)
-        arguments = ["--helper-scan", "Enterprise", r"C:\Path With Spaces\result.json"]
-        with patch.object(privileges.os, "name", "nt"), patch.object(privileges.sys, "frozen", True, create=True), patch.object(privileges.ctypes, "windll", types.SimpleNamespace(shell32=shell32), create=True):
-            started, _ = privileges.launch_elevated_helper(arguments)
-        self.assertTrue(started); self.assertEqual(calls[0][2], str(Path(privileges.sys.executable).resolve()))
-        self.assertEqual(calls[0][3], subprocess.list2cmdline(arguments)); self.assertNotIn("main.py", calls[0][3])
+    def test_removed_helper_modes_and_unknown_arguments_fail_closed(self) -> None:
+        for arguments in (
+            ["--helper-scan", "Enterprise", "result.json"],
+            ["--helper-preview", "autorun", "result.json"],
+            ["--helper-action", "autorun", "request.json", "result.json"],
+            ["--helper-rollback", "autorun", "record.json", "result.json"],
+            ["--unknown-release-option"],
+        ):
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "main.py"), *arguments],
+                cwd=ROOT, capture_output=True, text=True, timeout=15,
+                env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            )
+            self.assertNotEqual(completed.returncode, 0, arguments)
+            self.assertIn("unrecognized arguments", completed.stderr)
+
+    def test_frozen_analysis_excludes_mutation_and_elevation_modules(self) -> None:
+        spec = (ROOT / "WinCur.spec").read_text(encoding="utf-8")
+        for module in ("wincur.hardening", "wincur.helper", "wincur.privileges"):
+            self.assertIn(f'"{module}"', spec)
+        entry = (ROOT / "main.py").read_text(encoding="utf-8")
+        interface = (ROOT / "wincur" / "ui.py").read_text(encoding="utf-8")
+        for forbidden in ("wincur.helper", "wincur.hardening", "wincur.privileges", "launch_elevated_helper"):
+            self.assertNotIn(forbidden, entry)
+            self.assertNotIn(forbidden, interface)
 
     def test_approved_portrait_and_multisize_icon_are_required(self) -> None:
         spec = (ROOT / "WinCur.spec").read_text(encoding="utf-8")
@@ -158,8 +236,7 @@ class PackagingConfigurationTests(unittest.TestCase):
             local_data = Path(directory) / "LocalData"
             with patch.dict(os.environ, {"LOCALAPPDATA": str(local_data)}):
                 paths = (default_history_path(), default_action_history_path(), default_baseline_path(), default_profile_path(), default_preference_path())
-                pending = privileges.pending_output_path("packaging-test")
-            for path in (*paths, pending):
+            for path in paths:
                 self.assertTrue(path.is_relative_to(local_data / "WinCur"), path)
                 self.assertFalse(path.is_relative_to(ROOT), path)
 

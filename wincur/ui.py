@@ -8,7 +8,7 @@ import logging
 import os
 import platform
 import sys
-import time
+import ctypes
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -24,16 +24,13 @@ from . import APP_VERSION
 from .build_info import build_identifier
 from .branding import HeaderLogo, PortraitEasterEggDialog, load_application_icon, load_portrait
 from .checks import run_all_checks
-from .action_history import load_action_history, save_action_record
-from .hardening import ACTIONS, HardeningEngine, WindowsHardeningBackend, rollback_record_eligibility
+from .action_history import load_action_history
 from .baselines import BaselineStore, SecurityBaseline
 from .baseline_comparison import (EVIDENCE_ONLY, IMPROVEMENT, NEWLY_ASSESSABLE, NO_LONGER_ASSESSABLE,
     NOT_COMPARABLE, REGRESSION, UNCHANGED, BaselineComparison, compare_to_baseline)
 from .drift import compare_assessments
 from .history_analysis import aggregate_trend_points, build_trend_presentation, filter_history, history_point, latest_saved_timestamp
-from .models import (ActionAvailability, ActionOutcome, ActionPreview, ActionRecord, AssessmentEnvelope,
-                     AssessmentScore, CheckResult, CheckStatus, ScanRecord)
-from .privileges import is_administrator, launch_elevated_helper, pending_output_path
+from .models import AssessmentEnvelope, AssessmentScore, CheckResult, CheckStatus, ScanRecord
 from .presentation import sanitize_display_text
 from .reporting import assessment_report_filename, clear_history, default_history_path, delete_history_indices, export_html, load_history, save_history, unique_report_path
 from .scoring import load_scoring_config, load_selected_profile, save_selected_profile, score_results
@@ -41,6 +38,17 @@ from .theme import AppearanceMode, ThemeManager, ThemeTokens
 from .storage import atomic_write_json
 
 LOGGER = logging.getLogger("wincur.ui")
+
+
+def is_administrator() -> bool:
+    """Report the current process privilege without offering an elevation path."""
+
+    if os.name != "nt":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
 
 
 class LayoutStateStore:
@@ -210,22 +218,6 @@ class HistoryWorker(QObject):
         except Exception as exc:
             LOGGER.exception("Assessment history could not be saved")
             self.finished.emit(str(exc))
-
-
-class PreviewWorker(QObject):
-    finished = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, action_id: str | None = None) -> None:
-        super().__init__(); self.action_id = action_id
-
-    def run(self) -> None:
-        try:
-            engine = HardeningEngine(WindowsHardeningBackend())
-            ids = [self.action_id] if self.action_id else list(ACTIONS)
-            self.finished.emit([engine.preview(action_id) for action_id in ids])
-        except Exception as exc:
-            self.failed.emit(str(exc))
 
 
 class ModernHeader(QWidget):
@@ -452,11 +444,6 @@ class WinCurWindow(QMainWindow):
         self.current_record: ScanRecord | None = None; self.scan_thread: QThread | None = None; self.worker: ScanWorker | None = None
         self.history_thread: QThread | None = None; self.history_worker: HistoryWorker | None = None
         self.pending_history_records: list[ScanRecord] = []
-        self.previews: list[ActionPreview] = []; self.preview_thread: QThread | None = None; self.preview_worker: PreviewWorker | None = None; self.preview_request_ids: list[str] = []
-        self.validated_preview: ActionPreview | None = None; self.preview_mode = "all"; self.preview_repeat_reasons: dict[str, str] = {}
-        self.preview_expiry_timer = QTimer(self); self.preview_expiry_timer.setSingleShot(True); self.preview_expiry_timer.timeout.connect(self._expire_validated_preview)
-        self.pending_path: Path | None = None; self.pending_kind = ""; self.pending_action_id = ""; self.pending_started = 0.0; self.action_busy = False; self.score_before_action: float | None = None
-        self.helper_timer = QTimer(self); self.helper_timer.setInterval(500); self.helper_timer.timeout.connect(self._poll_helper)
         self.windows_name = windows_description(); self.computer_name = os.environ.get("COMPUTERNAME", platform.node() or "Unknown")
         self.setWindowTitle(f"WinCur {APP_VERSION} - Windows Security Assessment"); self.setMinimumSize(900, 640); self.resize(1180, 800)
         application_icon = load_application_icon()
@@ -479,7 +466,7 @@ class WinCurWindow(QMainWindow):
             button = QPushButton(label); button.setIcon(self.style().standardIcon(icon)); button.setObjectName("navButton"); button.setCheckable(True); button.setAutoExclusive(True); button.setMinimumHeight(42); button.clicked.connect(lambda checked=False, page=index: self._set_page(page)); self.nav_group.addButton(button, index); self.nav_buttons.append(button); side.addWidget(button)
         self.nav_buttons[0].setChecked(True)
         side.addSpacerItem(QSpacerItem(1, 1, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
-        safety = QLabel(f"SAFE OPERATION\nAssessments are read-only. WinCur {APP_VERSION} applies only one previewed action after confirmation and UAC."); safety.setWordWrap(True); safety.setObjectName("safetyLabel"); side.addWidget(safety)
+        safety = QLabel(f"SAFE OPERATION\nWinCur {APP_VERSION} assessments are read-only. Recommendations are never applied automatically."); safety.setWordWrap(True); safety.setObjectName("safetyLabel"); side.addWidget(safety)
         body.addWidget(sidebar)
 
         content = QWidget(); self.content_widget = content; content.setObjectName("content"); layout = QVBoxLayout(content); layout.setContentsMargins(24, 18, 24, 20); layout.setSpacing(10)
@@ -506,9 +493,8 @@ class WinCurWindow(QMainWindow):
         header = QHBoxLayout(); heading_box = QVBoxLayout(); title = QLabel("Your PC Security"); title.setObjectName("pageTitle"); heading_box.addWidget(title)
         intro = QLabel("Review important Windows security settings and decide what to address next. Assessments are read-only."); intro.setObjectName("intro"); intro.setWordWrap(True); heading_box.addWidget(intro); header.addLayout(heading_box, 1)
         self.scan_button = QPushButton("Scan PC"); self.scan_button.setObjectName("scanButton"); self.scan_button.setMinimumWidth(112); self.scan_button.clicked.connect(self.start_scan); header.addWidget(self.scan_button)
-        elevated = self.application_privilege == "Administrator"
-        self.elevated_button = QPushButton("Already Running as Administrator" if elevated else "Scan as Administrator"); self.elevated_button.setObjectName("secondaryButton"); self.elevated_button.setToolTip("WinCur is already running with administrator privileges; a second elevated scan is unnecessary." if elevated else "Run the same read-only assessment with administrator visibility after an explicit UAC prompt."); self.elevated_button.setEnabled(not elevated); self.elevated_button.clicked.connect(self._run_elevated_scan); header.addWidget(self.elevated_button)
-        self.administrator_mode_label = QLabel("Administrator Mode"); self.administrator_mode_label.setObjectName("modeLabel"); self.administrator_mode_label.setVisible(elevated); self.administrator_mode_label.setToolTip("WinCur is already running with administrator privileges."); header.addWidget(self.administrator_mode_label)
+        if self.application_privilege == "Administrator":
+            self.administrator_mode_label = QLabel("Administrator Mode"); self.administrator_mode_label.setObjectName("modeLabel"); self.administrator_mode_label.setToolTip("WinCur was started by the user with administrator privileges; WinCur does not request elevation."); header.addWidget(self.administrator_mode_label)
         self.export_button = QPushButton("Export Report"); self.export_button.setObjectName("secondaryButton"); self.export_button.setEnabled(False); self.export_button.clicked.connect(self.export_report); header.addWidget(self.export_button); layout.addLayout(header)
 
         self.overview_status_label = QLabel("Scan required"); self.overview_status_label.setObjectName("detailTitle"); layout.addWidget(self.overview_status_label)
@@ -540,7 +526,7 @@ class WinCurWindow(QMainWindow):
 
     def _set_page(self, index: int) -> None:
         if not 0 <= index < self.pages.count(): return
-        titles = ("Overview", "Security Issues", "Activity", "Settings"); subtitles = ("Current security assessment and recommended next steps.", "Review findings and explicitly previewed fixes.", "Review previous security assessments and hardening activity.", "Manage appearance, assessment depth, local data, and application information.")
+        titles = ("Overview", "Security Issues", "Activity", "Settings"); subtitles = ("Current security assessment and recommended next steps.", "Review findings, evidence, and recommendations.", "Review previous security assessments and legacy action history.", "Manage appearance, assessment depth, local data, and application information.")
         self.pages.setCurrentIndex(index); self.nav_buttons[index].setChecked(True); self.page_heading.setText(titles[index]); self.page_subtitle.setText(subtitles[index])
         if hasattr(self, "selection_coordinator"): self.selection_coordinator.clear_visual_selection()
 
@@ -565,9 +551,8 @@ class WinCurWindow(QMainWindow):
 
     def _security_issues_page(self) -> QWidget:
         page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(9)
-        intro = QLabel("Start with confirmed issues. Open the safeguarded fix workspace only when you need it."); intro.setObjectName("intro"); intro.setWordWrap(True); layout.addWidget(intro)
-        bar, self.issues_view_group, self.issues_view_buttons = segmented_bar(("Current checklist", "Fix workspace"), self._set_issues_view, self); layout.addWidget(bar)
-        self.issues_pages = QStackedWidget(); self.current_issues_scroll = self._scrollable_page(self._findings_tab()); self.issues_pages.addWidget(self.current_issues_scroll); self.issues_pages.addWidget(self._hardening_tab()); layout.addWidget(self.issues_pages, 1); return page
+        intro = QLabel("Review confirmed issues, inconclusive checks, technical evidence, and recommended next steps. WinCur does not apply configuration changes."); intro.setObjectName("intro"); intro.setWordWrap(True); layout.addWidget(intro)
+        self.current_issues_scroll = self._scrollable_page(self._findings_tab()); layout.addWidget(self.current_issues_scroll, 1); return page
 
     def _activity_page(self) -> QWidget:
         page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(9)
@@ -580,11 +565,11 @@ class WinCurWindow(QMainWindow):
 
         assessment_box = QFrame(); assessment_box.setObjectName("infoPanel"); assessment_layout = QVBoxLayout(assessment_box); assessment_title = QLabel("Security assessments"); assessment_title.setObjectName("detailTitle"); assessment_layout.addWidget(assessment_title); assessment_form = QFormLayout(); self.profile_combo = QComboBox(); self.profile_combo.setObjectName("profileCombo"); self.profile_combo.addItems(list(self.config.get("profiles", {}))); self.profile_combo.setCurrentText(self.selected_profile); self.profile_combo.setToolTip("Changes score interpretation only; it does not run checks or modify Windows."); self.profile_combo.currentTextChanged.connect(self._profile_changed); assessment_form.addRow("Assessment depth:", self.profile_combo); assessment_layout.addLayout(assessment_form)
         self.profile_explanation_label = QLabel(); self.profile_explanation_label.setObjectName("intro"); self.profile_explanation_label.setWordWrap(True); assessment_layout.addWidget(self.profile_explanation_label); self._update_profile_explanation(self.selected_profile)
-        scan_explanation = QLabel(f"Standard scans are recommended for routine use. Administrator scans are also read-only, require an explicit UAC choice, and may assess settings unavailable to a Standard scan. Scoring policy: {self.config.get('policy_version', 'Unversioned')}."); scan_explanation.setObjectName("infoValue"); scan_explanation.setWordWrap(True); assessment_layout.addWidget(scan_explanation); layout.addWidget(assessment_box)
+        scan_explanation = QLabel(f"WinCur runs assessments in the current user context and never requests elevation. Permission-limited checks are reported as Unknown and reduce coverage. Scoring policy: {self.config.get('policy_version', 'Unversioned')}."); scan_explanation.setObjectName("infoValue"); scan_explanation.setWordWrap(True); assessment_layout.addWidget(scan_explanation); layout.addWidget(assessment_box)
 
         data_box = QFrame(); data_box.setObjectName("infoPanel"); data_layout = QVBoxLayout(data_box); data_title = QLabel("History and data"); data_title.setObjectName("detailTitle"); data_layout.addWidget(data_title); data_text = QLabel("Assessments, preserved snapshot files, reports, preferences, and hardening audit records stay local to this PC."); data_text.setObjectName("intro"); data_text.setWordWrap(True); data_layout.addWidget(data_text); data_buttons = QHBoxLayout(); self.manage_history_settings_button = QPushButton("Manage Scan History"); self.manage_history_settings_button.setObjectName("secondaryButton"); self.manage_history_settings_button.clicked.connect(self._open_history_management); data_buttons.addWidget(self.manage_history_settings_button); self.open_data_folder_button = QPushButton("Open Data Folder"); self.open_data_folder_button.setObjectName("secondaryButton"); self.open_data_folder_button.clicked.connect(self._open_data_folder); data_buttons.addWidget(self.open_data_folder_button); data_buttons.addStretch(1); data_layout.addLayout(data_buttons); layout.addWidget(data_box)
 
-        about_box = QFrame(); about_box.setObjectName("infoPanel"); about_layout = QVBoxLayout(about_box); about_title = QLabel("About WinCur"); about_title.setObjectName("detailTitle"); about_layout.addWidget(about_title); about = QLabel(f"WinCur {APP_VERSION} — Windows Security Assessment\nBuild: {build_identifier()}\n\nWinCur evaluates selected configuration-hardening settings. Scores and coverage are assessment indicators, not guarantees of security. Scans are read-only. Any supported remediation remains individual, previewed, explicitly confirmed, verified, and subject to existing UAC and policy safeguards."); about.setTextFormat(Qt.TextFormat.PlainText); about.setWordWrap(True); about.setObjectName("infoValue"); about_layout.addWidget(about); layout.addWidget(about_box); layout.addStretch(1); return page
+        about_box = QFrame(); about_box.setObjectName("infoPanel"); about_layout = QVBoxLayout(about_box); about_title = QLabel("About WinCur"); about_title.setObjectName("detailTitle"); about_layout.addWidget(about_title); about = QLabel(f"WinCur {APP_VERSION} — Windows Security Assessment\nBuild: {build_identifier()}\n\nWinCur evaluates selected configuration-hardening settings. Scores and coverage are assessment indicators, not guarantees of security. Scans are read-only. WinCur provides recommendations but does not apply or roll back Windows configuration changes."); about.setTextFormat(Qt.TextFormat.PlainText); about.setWordWrap(True); about.setObjectName("infoValue"); about_layout.addWidget(about); layout.addWidget(about_box); layout.addStretch(1); return page
 
     def _update_profile_explanation(self, profile: str) -> None:
         if not hasattr(self, "profile_explanation_label"): return
@@ -601,12 +586,8 @@ class WinCurWindow(QMainWindow):
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))): QMessageBox.warning(self, "Application data", "Windows could not open the WinCur data folder.")
 
     def _open_security_issues(self, view: int = 0) -> None:
-        self._set_page(1); self._set_issues_view(view)
-
-    def _set_issues_view(self, view: int) -> None:
-        if view == 2: view = 1  # compatibility for existing internal Fix Workspace callers
-        if not 0 <= view < self.issues_pages.count(): view = 0
-        self.issues_pages.setCurrentIndex(view); self.issues_view_buttons[view].setChecked(True)
+        del view
+        self._set_page(1)
 
     def _open_saved_snapshots(self) -> None:
         if self.baseline_dialog is None:
@@ -856,8 +837,6 @@ class WinCurWindow(QMainWindow):
         if hasattr(self, "findings_center_tree"):
             for row in range(self.findings_center_tree.topLevelItemCount()):
                 item = self.findings_center_tree.topLevelItem(row); data = item.data(0, Qt.ItemDataRole.UserRole) or {}; finding = data.get("finding", {}); informational = data.get("state") == "Informational"; self._style_severity(item, 3, "Informational" if informational else str(finding.get("severity", "Unknown"))); self._style_status_column(item, 4, str(finding.get("status", "Unknown")), informational)
-        if self.action_tree.currentItem(): self._show_action(self.action_tree.currentItem(), None)
-        for row in range(self.action_tree.topLevelItemCount()): self._style_severity(self.action_tree.topLevelItem(row), 1, self.action_tree.topLevelItem(row).text(1))
         context = getattr(self, "displayed_baseline_context", None)
         if context: self._display_baseline_comparison(*context)
 
@@ -904,12 +883,12 @@ class WinCurWindow(QMainWindow):
         self.tree = CoordinatedTreeWidget(); self.tree.setHeaderLabels(["Finding", "Severity", "Status", "Summary"]); self.tree.setRootIsDecorated(False); self.tree.setMinimumWidth(0)
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive); self.tree.header().resizeSection(0, 235); self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents); self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents); self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.tree.currentItemChanged.connect(self._show_finding); list_layout.addWidget(self.tree, 1); self.findings_splitter.addWidget(self.findings_list_panel)
-        self.finding_detail_panel = QWidget(); self.finding_detail_panel.setMinimumWidth(300); self.finding_detail_panel.setMinimumHeight(300); self.finding_detail_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding); detail_layout = QVBoxLayout(self.finding_detail_panel); detail_layout.setContentsMargins(8, 0, 0, 0); detail_layout.setSpacing(6); self.detail_title = QLabel("Select a finding to view details."); self.detail_title.setWordWrap(True); self.detail_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); self.detail_title.setObjectName("detailTitle"); detail_layout.addWidget(self.detail_title)
-        self.finding_detail_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.details = QTextBrowser(); self.details.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth); self.details.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere); self.details.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); self.details.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding); self.finding_detail_splitter.addWidget(self.details)
-        self.technical_finding_details = QTextBrowser(); self.technical_finding_details.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth); self.technical_finding_details.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere); self.technical_finding_details.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); self.technical_finding_details.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding); self.technical_finding_details.setVisible(False); self.finding_detail_splitter.addWidget(self.technical_finding_details)
+        self.finding_detail_panel = QWidget(); self.finding_detail_panel.setMinimumWidth(300); self.finding_detail_panel.setMinimumHeight(300); self.finding_detail_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding); detail_layout = QVBoxLayout(self.finding_detail_panel); detail_layout.setContentsMargins(8, 0, 0, 0); detail_layout.setSpacing(6); self.detail_title = QLabel("Select a finding to view details."); self.detail_title.setWordWrap(True); self.detail_title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum); self.detail_title.setObjectName("detailTitle"); detail_layout.addWidget(self.detail_title)
+        self.finding_detail_splitter = QSplitter(Qt.Orientation.Vertical); self.finding_detail_splitter.setChildrenCollapsible(False)
+        self.details = QTextBrowser(); self.details.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth); self.details.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere); self.details.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); self.details.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded); self.details.setMinimumHeight(110); self.details.document().setDocumentMargin(8); self.details.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding); self.finding_detail_splitter.addWidget(self.details)
+        self.technical_finding_details = QTextBrowser(); self.technical_finding_details.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth); self.technical_finding_details.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere); self.technical_finding_details.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); self.technical_finding_details.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded); self.technical_finding_details.setMinimumHeight(90); self.technical_finding_details.document().setDocumentMargin(8); self.technical_finding_details.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding); self.technical_finding_details.setVisible(False); self.finding_detail_splitter.addWidget(self.technical_finding_details)
         self._register_splitter("finding_details_evidence", self.finding_detail_splitter, [330, 170]); detail_layout.addWidget(self.finding_detail_splitter, 1)
-        buttons = QHBoxLayout(); buttons.setSpacing(6); self.finding_technical_button = QPushButton("Show Technical Details"); self.finding_technical_button.setObjectName("xpButton"); self.finding_technical_button.clicked.connect(self._toggle_finding_technical); buttons.addWidget(self.finding_technical_button); self.finding_fix_button = QPushButton("View Available Fix"); self.finding_fix_button.setObjectName("xpButton"); self.finding_fix_button.setEnabled(False); self.finding_fix_button.clicked.connect(self._open_finding_fix); buttons.addWidget(self.finding_fix_button); self.settings_button = QPushButton("Open Windows Settings"); self.settings_button.setObjectName("xpButton"); self.settings_button.setEnabled(False); self.settings_button.clicked.connect(self._open_settings); buttons.addWidget(self.settings_button); detail_layout.addLayout(buttons)
+        buttons = QHBoxLayout(); buttons.setSpacing(6); self.finding_technical_button = QPushButton("Show Technical Details"); self.finding_technical_button.setObjectName("xpButton"); self.finding_technical_button.clicked.connect(self._toggle_finding_technical); buttons.addWidget(self.finding_technical_button); self.settings_button = QPushButton("Open Windows Settings"); self.settings_button.setObjectName("xpButton"); self.settings_button.setEnabled(False); self.settings_button.clicked.connect(self._open_settings); buttons.addWidget(self.settings_button); detail_layout.addLayout(buttons)
         self.findings_splitter.addWidget(self.finding_detail_panel); self.findings_splitter.setStretchFactor(0, 65); self.findings_splitter.setStretchFactor(1, 35); self._register_splitter("security_issues", self.findings_splitter, [650, 350]); layout.addWidget(self.findings_splitter, 1)
         for control in (self.current_status_filter, self.finding_category_combo, self.finding_severity_combo, self.baseline_change_filter): control.currentTextChanged.connect(self._rebuild_current_findings)
         return page
@@ -933,7 +912,6 @@ class WinCurWindow(QMainWindow):
         self.findings_center_tree.currentItemChanged.connect(self._show_center_finding); splitter.addWidget(self.findings_center_tree)
         detail = QWidget(); detail_layout = QVBoxLayout(detail); self.center_finding_title = QLabel("Select a saved finding."); self.center_finding_title.setObjectName("detailTitle"); detail_layout.addWidget(self.center_finding_title)
         self.center_finding_details = QTextBrowser(); detail_layout.addWidget(self.center_finding_details)
-        self.center_hardening_button = QPushButton("Open Supported Hardening Action"); self.center_hardening_button.setObjectName("xpButton"); self.center_hardening_button.setEnabled(False); self.center_hardening_button.clicked.connect(self._open_center_hardening); detail_layout.addWidget(self.center_hardening_button, 0, Qt.AlignmentFlag.AlignLeft)
         splitter.addWidget(detail); self.findings_center_splitter = self._register_splitter("saved_findings", splitter, [330, 230]); layout.addWidget(splitter); return page
 
     def _trends_tab(self) -> QWidget:
@@ -1172,7 +1150,7 @@ class WinCurWindow(QMainWindow):
         for index, row in enumerate(visible):
             finding = row["finding"]; values = [row["state"], finding.get("title", finding.get("check_id", "Unknown")), finding.get("category", "Unknown"), finding.get("severity", "Unknown"), finding.get("status", "Unknown"), row["profile"], friendly_timestamp(row["timestamp"])]; item = QTreeWidgetItem([sanitize_display_text(value) for value in values]); item.setData(0, Qt.ItemDataRole.UserRole, row); item.setToolTip(6, timestamp_tooltip(row["timestamp"])); self._style_severity(item, 3, "Informational" if row["state"] == "Informational" else str(finding.get("severity", "Unknown"))); self._style_status_column(item, 4, str(finding.get("status", "Unknown")), row["state"] == "Informational"); self.findings_center_tree.addTopLevelItem(item)
         if self.findings_center_tree.topLevelItemCount(): self.findings_center_tree.setCurrentItem(self.findings_center_tree.topLevelItem(0))
-        else: self.center_finding_title.setText("No saved findings match these filters."); self.center_finding_details.clear(); self.center_hardening_button.setEnabled(False)
+        else: self.center_finding_title.setText("No saved findings match these filters."); self.center_finding_details.clear()
 
     def _show_center_finding(self, current: QTreeWidgetItem | None, previous: QTreeWidgetItem | None) -> None:
         if not current: return
@@ -1187,15 +1165,6 @@ class WinCurWindow(QMainWindow):
             recommendation = str(remediation.get("summary", "No recommendation is defined."))
         sections = [("Classification", str(row.get("confidence", row.get("state", "Observed")))), ("Saved result", str(finding.get("status", "Unknown"))), ("Evidence", str(finding.get("evidence", "Unavailable"))), ("Explanation", str(finding.get("explanation", "Unavailable"))), ("Recommendation", recommendation)]
         self.center_finding_details.setHtml(html_sections(sections))
-        action_id = self._action_for_check(str(finding.get("check_id"))); self.center_hardening_button.setProperty("actionId", action_id); self.center_hardening_button.setEnabled(bool(action_id))
-
-    def _open_center_hardening(self) -> None:
-        action_id = self.center_hardening_button.property("actionId")
-        if not action_id: return
-        self._open_security_issues(2)
-        for row in range(self.action_tree.topLevelItemCount()):
-            item = self.action_tree.topLevelItem(row)
-            if item.data(0, Qt.ItemDataRole.UserRole) == action_id: self.action_tree.setCurrentItem(item); break
 
     def _history_tab(self) -> QWidget:
         page = QWidget(); layout = QVBoxLayout(page)
@@ -1212,196 +1181,17 @@ class WinCurWindow(QMainWindow):
         self.clear_history_button = QPushButton("Clear all scan history"); self.clear_history_button.setObjectName("destructiveButton"); self.clear_history_button.setEnabled(False); self.clear_history_button.clicked.connect(self._clear_scan_history); buttons.addWidget(self.clear_history_button); buttons.addStretch(1); layout.addLayout(buttons)
         self.history_table.itemSelectionChanged.connect(self._history_selection_changed); self.history_table.itemChanged.connect(self._history_checkbox_changed); self.history_profile_filter.currentTextChanged.connect(self._filter_history_rows); self.history_select_all_button.clicked.connect(self._select_all_visible_history); self.history_deselect_all_button.clicked.connect(self._deselect_all_history); return page
 
-    def _hardening_tab(self) -> QWidget:
-        page = QWidget(); layout = QVBoxLayout(page)
-        notice = QLabel("Actions are individual and opt-in. Select one, review the exact proposal, and confirm it. WinCur never runs all fixes automatically."); notice.setWordWrap(True); notice.setObjectName("methodology"); layout.addWidget(notice)
-        top = QHBoxLayout(); self.preview_button = QPushButton("Refresh Action Previews"); self.preview_button.setObjectName("xpButton"); self.preview_button.clicked.connect(self._refresh_previews); top.addWidget(self.preview_button); top.addStretch(1); layout.addLayout(top)
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        self.action_tree = CoordinatedTreeWidget(); self.action_tree.setHeaderLabels(["Hardening action", "Severity", "State", "Current configuration"]); self.action_tree.setRootIsDecorated(False); self.action_tree.setMinimumHeight(110)
-        self.action_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch); self.action_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents); self.action_tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents); self.action_tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.action_tree.currentItemChanged.connect(self._show_action); splitter.addWidget(self.action_tree)
-        detail = QWidget(); details = QVBoxLayout(detail); self.action_title = QLabel("No action preview selected"); self.action_title.setObjectName("detailTitle"); details.addWidget(self.action_title)
-        self.action_details = QTextBrowser(); self.action_details.setMaximumHeight(110); self.action_details.setHtml("<p>Select an action above, then choose <b>Preview Selected Action</b>. Previewing is read-only and never changes Windows settings.</p>"); details.addWidget(self.action_details)
-        self.advanced_details = QTextBrowser(); self.advanced_details.setVisible(False); self.advanced_details.setMaximumHeight(170); details.addWidget(self.advanced_details)
-        self.preview_status_panel = QFrame(); self.preview_status_panel.setObjectName("infoPanel"); preview_status_layout = QVBoxLayout(self.preview_status_panel); preview_status_layout.setContentsMargins(10, 7, 10, 7); preview_status_layout.setSpacing(2)
-        self.preview_status_title = QLabel("Preview required before applying"); preview_status_font = self.preview_status_title.font(); preview_status_font.setBold(True); self.preview_status_title.setFont(preview_status_font); self.preview_status_title.setObjectName("infoValue"); preview_status_layout.addWidget(self.preview_status_title)
-        self.preview_status_text = QLabel("Select an action, then review its proposed changes. No changes will be made during the preview."); self.preview_status_text.setObjectName("intro"); self.preview_status_text.setWordWrap(True); preview_status_layout.addWidget(self.preview_status_text); details.addWidget(self.preview_status_panel)
-        buttons = QHBoxLayout(); self.preview_selected_button = QPushButton("Preview Selected Action"); self.preview_selected_button.setObjectName("xpButton"); self.preview_selected_button.clicked.connect(self._preview_selected_action); buttons.addWidget(self.preview_selected_button)
-        self.apply_button = QPushButton("Apply Selected Action"); self.apply_button.setObjectName("scanButton"); self.apply_button.setEnabled(False); self.apply_button.setToolTip("Preview this remediation before applying it."); self.apply_button.clicked.connect(self._apply_selected_action); buttons.addWidget(self.apply_button)
-        self.advanced_button = QPushButton("Show Advanced Details"); self.advanced_button.setObjectName("xpButton"); self.advanced_button.clicked.connect(self._toggle_advanced); buttons.addWidget(self.advanced_button); buttons.addStretch(1); details.addLayout(buttons)
-        splitter.addWidget(detail); self.hardening_splitter = self._register_splitter("hardening_workspace", splitter, [260, 300]); layout.addWidget(splitter)
-        for action_id, definition in ACTIONS.items():
-            item = QTreeWidgetItem([definition.title, definition.severity, "Refresh required", "Not queried"]); item.setData(0, Qt.ItemDataRole.UserRole, action_id); self._style_severity(item, 1, definition.severity); self.action_tree.addTopLevelItem(item)
-        return page
-
     def _action_history_tab(self) -> QWidget:
         page = QWidget(); layout = QVBoxLayout(page)
-        note = QLabel("Rollback always requires selection, confirmation, and UAC. Firewall rollback is intentionally unavailable because it could weaken protection."); note.setWordWrap(True); note.setObjectName("methodology"); layout.addWidget(note)
+        note = QLabel("Legacy action records are displayed for historical reference only. This assessment-only release cannot apply or roll back Windows configuration changes."); note.setWordWrap(True); note.setObjectName("methodology"); layout.addWidget(note)
         self.action_history_table = CoordinatedTableWidget(0, 5); self.action_history_table.setHorizontalHeaderLabels(["Date and time", "Action", "Operation type", "Result", "Verification / rollback"])
-        self.action_history_table.verticalHeader().setVisible(False); self.action_history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers); self.action_history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows); self.action_history_table.itemSelectionChanged.connect(self._update_rollback_button)
+        self.action_history_table.verticalHeader().setVisible(False); self.action_history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers); self.action_history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.action_history_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents); self.action_history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch); self.action_history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents); self.action_history_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents); self.action_history_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.action_history_table)
-        self.rollback_button = QPushButton("Rollback Selected Action"); self.rollback_button.setObjectName("xpButton"); self.rollback_button.setEnabled(False); self.rollback_button.setToolTip("Select a valid rollback-eligible audit record."); self.rollback_button.clicked.connect(self._rollback_selected); layout.addWidget(self.rollback_button, 0, Qt.AlignmentFlag.AlignLeft)
         return page
 
-    def _refresh_previews(self) -> None:
-        if self.action_busy or (self.preview_thread and self.preview_thread.isRunning()): return
-        self.validated_preview = None; self.apply_button.setEnabled(False); self.preview_mode = "all"
-        self._mark_previews_pending(list(ACTIONS)); self.preview_button.setEnabled(False); self.preview_button.setText("Reading configuration..."); self._start_preview_worker(None)
-
-    def _preview_selected_action(self) -> None:
-        item = self.action_tree.currentItem()
-        if not item or self.action_busy or (self.preview_thread and self.preview_thread.isRunning()): return
-        self.validated_preview = None; self.apply_button.setEnabled(False); self.preview_mode = "selected"; self.preview_selected_button.setEnabled(False); self.preview_selected_button.setText("Previewing...")
-        action_id = str(item.data(0, Qt.ItemDataRole.UserRole)); self._mark_previews_pending([action_id]); self._start_preview_worker(action_id)
-
-    def _mark_previews_pending(self, action_ids: list[str]) -> None:
-        requested = set(action_ids); self.preview_request_ids = list(action_ids); self._clear_validated_preview()
-        self.previews = [preview for preview in self.previews if preview.action_id not in requested]
-        for row in range(self.action_tree.topLevelItemCount()):
-            item = self.action_tree.topLevelItem(row)
-            if item.data(0, Qt.ItemDataRole.UserRole) in requested:
-                item.setText(2, "Reading configuration"); item.setText(3, "Query in progress")
-        self._show_action(self.action_tree.currentItem(), None)
-
-    def _clear_validated_preview(self) -> None:
-        self.preview_expiry_timer.stop(); self.validated_preview = None; self.apply_button.setEnabled(False); self.apply_button.setToolTip("Preview this remediation before applying it.")
-
-    def _accept_validated_preview(self, preview: ActionPreview) -> None:
-        self._clear_validated_preview()
-        if preview.availability != ActionAvailability.AVAILABLE: return
-        try:
-            created = datetime.fromisoformat(preview.created_utc.replace("Z", "+00:00")); created = created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created.astimezone(timezone.utc)
-            remaining_ms = min(300000, int((created.timestamp() + 300 - datetime.now(timezone.utc).timestamp()) * 1000))
-        except (AttributeError, TypeError, ValueError): remaining_ms = 0
-        if remaining_ms <= 0:
-            self.preview_repeat_reasons[preview.action_id] = "The preview is missing a current validation timestamp or has expired. Preview this remediation again."
-            return
-        self.validated_preview = preview; self.preview_repeat_reasons.pop(preview.action_id, None)
-        self.preview_expiry_timer.start(remaining_ms)
-
-    def _expire_validated_preview(self) -> None:
-        preview = self.validated_preview
-        if not preview: return
-        self.preview_repeat_reasons[preview.action_id] = "The preview expired. Preview this remediation again so WinCur can revalidate the current configuration."
-        self._clear_validated_preview(); self._show_action(self.action_tree.currentItem(), None)
-
-    def _start_preview_worker(self, action_id: str | None) -> None:
-        self.preview_thread = QThread(self); self.preview_worker = PreviewWorker(action_id); self.preview_worker.moveToThread(self.preview_thread); self.preview_thread.started.connect(self.preview_worker.run)
-        self.preview_worker.finished.connect(self._previews_ready); self.preview_worker.failed.connect(self._previews_failed); self.preview_worker.finished.connect(self.preview_thread.quit); self.preview_worker.failed.connect(self.preview_thread.quit); self.preview_worker.finished.connect(self.preview_worker.deleteLater); self.preview_worker.failed.connect(self.preview_worker.deleteLater); self.preview_thread.finished.connect(self._preview_thread_finished); self.preview_thread.finished.connect(self.preview_thread.deleteLater); self.preview_thread.start()
-
-    def _previews_ready(self, previews: list[ActionPreview]) -> None:
-        received = {preview.action_id for preview in previews}
-        for preview in previews:
-            self.previews = [old for old in self.previews if old.action_id != preview.action_id] + [preview]
-            for row in range(self.action_tree.topLevelItemCount()):
-                item = self.action_tree.topLevelItem(row)
-                if item.data(0, Qt.ItemDataRole.UserRole) == preview.action_id:
-                    item.setText(2, preview.availability.value); item.setText(3, preview.current_configuration); break
-        for action_id in set(self.preview_request_ids) - received:
-            for row in range(self.action_tree.topLevelItemCount()):
-                item = self.action_tree.topLevelItem(row)
-                if item.data(0, Qt.ItemDataRole.UserRole) == action_id:
-                    item.setText(2, "Refresh failed"); item.setText(3, "Configuration unavailable"); break
-        self.preview_request_ids = []
-        if not self.action_tree.currentItem() and self.action_tree.topLevelItemCount(): self.action_tree.setCurrentItem(self.action_tree.topLevelItem(0))
-        if self.preview_mode == "selected" and previews:
-            preview = previews[0]
-            if preview.availability == ActionAvailability.REQUIRES_ELEVATION:
-                QTimer.singleShot(0, lambda action_id=preview.action_id: self._launch_helper("preview", ["--helper-preview", action_id], action_id))
-            else:
-                self._accept_validated_preview(preview)
-        self.preview_button.setEnabled(True); self.preview_button.setText("Refresh Action Previews"); self.preview_selected_button.setEnabled(True); self.preview_selected_button.setText("Preview Selected Action"); self._show_action(self.action_tree.currentItem(), None)
-
-    def _previews_failed(self, message: str) -> None:
-        for action_id in self.preview_request_ids:
-            for row in range(self.action_tree.topLevelItemCount()):
-                item = self.action_tree.topLevelItem(row)
-                if item.data(0, Qt.ItemDataRole.UserRole) == action_id:
-                    item.setText(2, "Refresh failed"); item.setText(3, "Configuration unavailable"); break
-        self.preview_request_ids = []; self._clear_validated_preview(); self._show_action(self.action_tree.currentItem(), None)
-        self.preview_button.setEnabled(True); self.preview_button.setText("Refresh Action Previews"); self.preview_selected_button.setEnabled(True); self.preview_selected_button.setText("Preview Selected Action"); QMessageBox.warning(self, "Preview failed", message)
-
-    def _preview_thread_finished(self) -> None: self.preview_thread = None; self.preview_worker = None
-
-    def _selected_preview(self) -> ActionPreview | None:
-        item = self.action_tree.currentItem()
-        if not item: return None
-        action_id = item.data(0, Qt.ItemDataRole.UserRole)
-        return next((preview for preview in self.previews if preview.action_id == action_id), None)
-
-    def _show_action(self, current: QTreeWidgetItem | None, previous: QTreeWidgetItem | None) -> None:
-        preview = self._selected_preview()
-        if not preview:
-            self.apply_button.setEnabled(False); self.apply_button.setToolTip("Preview this remediation before applying it."); self.action_title.setText("No action preview selected"); self.action_details.setMaximumHeight(110); self.action_details.setHtml("<p>Select an action above, then choose <b>Preview Selected Action</b>. Previewing is read-only and never changes Windows settings.</p>")
-            state = current.text(2) if current else ""
-            action_id = str(current.data(0, Qt.ItemDataRole.UserRole)) if current else ""
-            if action_id in self.preview_repeat_reasons: self.preview_status_title.setText("Preview required again"); self.preview_status_text.setText(self.preview_repeat_reasons[action_id])
-            elif state == "Reading configuration": self.preview_status_title.setText("Preview in progress"); self.preview_status_text.setText("WinCur is reading the current configuration. No changes are being made.")
-            elif state == "Refresh failed": self.preview_status_title.setText("Preview failed"); self.preview_status_text.setText("The current configuration could not be read. Refresh or preview this action again; Apply remains unavailable.")
-            elif current: self.preview_status_title.setText("Preview required before applying"); self.preview_status_text.setText("Review the proposed changes before applying this remediation. No changes will be made during the preview.")
-            else: self.preview_status_title.setText("Select a remediation action"); self.preview_status_text.setText("Choose an action to review its current and recommended configuration.")
-            return
-        self.action_details.setMaximumHeight(16777215)
-        self.action_title.setText(f"{preview.title} — {preview.availability.value}")
-        sections = [("Security finding and severity", f"{preview.finding} — {preview.severity}"), ("Current configuration", preview.current_configuration), ("Recommended configuration", preview.recommended_configuration), ("Why this matters", preview.rationale), ("Compatibility considerations", preview.compatibility), ("Required permissions", preview.required_permissions), ("Exact proposed change", preview.exact_change), ("Verification", preview.verification), ("Rollback", preview.rollback), ("Management evidence", preview.management_evidence)]
-        self.action_details.setHtml(html_sections(sections)); self.advanced_details.setPlainText(sanitize_display_text(preview.technical_details or "No additional technical details."))
-        valid = self.validated_preview is not None and self.validated_preview.action_id == preview.action_id and self.validated_preview.preview_token == preview.preview_token
-        ready = valid and preview.availability == ActionAvailability.AVAILABLE and not self.action_busy; self.apply_button.setEnabled(ready); self.apply_button.setToolTip("Apply this previewed remediation after explicit confirmation." if ready else "Preview this remediation before applying it.")
-        if ready: self.preview_status_title.setText("Preview complete"); self.preview_status_text.setText("This action is ready for confirmation.")
-        elif preview.action_id in self.preview_repeat_reasons: self.preview_status_title.setText("Preview required again"); self.preview_status_text.setText(self.preview_repeat_reasons[preview.action_id])
-        elif preview.availability == ActionAvailability.AVAILABLE: self.preview_status_title.setText("Preview required before applying"); self.preview_status_text.setText("Review the proposed changes before applying this remediation. No changes will be made during the preview.")
-        elif preview.availability == ActionAvailability.ALREADY_COMPLIANT: self.preview_status_title.setText("No action required"); self.preview_status_text.setText("The current configuration already meets this remediation requirement, so Apply remains unavailable.")
-        elif preview.availability == ActionAvailability.MANAGED: self.preview_status_title.setText("Action blocked — managed setting"); self.preview_status_text.setText("WinCur detected organizational management for this setting. Apply remains unavailable. " + sanitize_display_text(preview.management_evidence))
-        elif preview.availability == ActionAvailability.REQUIRES_ELEVATION: self.preview_status_title.setText("Administrator preview required"); self.preview_status_text.setText("Administrator authorization is required to complete the read-only preview. Apply remains unavailable.")
-        elif preview.availability == ActionAvailability.MANUAL: self.preview_status_title.setText("Manual review required"); self.preview_status_text.setText("WinCur could not safely establish management ownership or supported automation. Apply remains unavailable. " + sanitize_display_text(preview.management_evidence))
-        else: self.preview_status_title.setText("Action unavailable"); self.preview_status_text.setText("This configuration cannot be remediated through the supported WinCur workflow. Apply remains unavailable. " + sanitize_display_text(preview.management_evidence))
-
-    def _toggle_advanced(self) -> None:
-        visible = not self.advanced_details.isVisible(); self.advanced_details.setVisible(visible); self.advanced_button.setText("Hide Advanced Details" if visible else "Show Advanced Details")
-
-    def _apply_selected_action(self) -> None:
-        preview = self.validated_preview
-        selected = self._selected_preview()
-        if not preview or not selected or preview.action_id != selected.action_id or preview.preview_token != selected.preview_token or preview.availability != ActionAvailability.AVAILABLE or self.action_busy: return
-        text = f"Apply only this action?\n\n{preview.title}\n\nExact change:\n{preview.exact_change}\n\nCompatibility:\n{preview.compatibility}\n\nWinCur will capture the original state and verify the result."
-        if QMessageBox.question(self, "Confirm hardening action", text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes: return
-        try:
-            request_path = pending_output_path("apply-request")
-            atomic_write_json(request_path, {"action_id": preview.action_id, "preview_token": preview.preview_token, "created_utc": preview.created_utc})
-        except OSError as exc:
-            QMessageBox.warning(self, "Remediation could not start", f"WinCur could not securely stage the approved request. No changes were made.\n\n{exc}"); return
-        if not self._launch_helper("action", ["--helper-action", preview.action_id, str(request_path)], preview.action_id):
-            try: request_path.unlink(missing_ok=True)
-            except OSError: pass
-
-    def _rollback_selected(self) -> None:
-        row = self.action_history_table.currentRow()
-        records = self.action_history_records
-        if row < 0 or row >= len(records): return
-        record = records[row]
-        eligible, reason = rollback_record_eligibility(record, records)
-        if not eligible: QMessageBox.information(self, "Rollback unavailable", reason); self._update_rollback_button(); return
-        if QMessageBox.question(self, "Confirm rollback", "Restore the captured prior state for this action? This may reduce the hardening level and requires UAC approval.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes: return
-        try:
-            request_path = pending_output_path("rollback-request"); atomic_write_json(request_path, record)
-        except OSError as exc:
-            QMessageBox.warning(self, "Rollback could not start", f"WinCur could not securely stage the approved rollback request. No changes were made.\n\n{exc}"); return
-        if not self._launch_helper("rollback", ["--helper-rollback", str(record["action_id"]), str(request_path)], str(record["action_id"])):
-            try: request_path.unlink(missing_ok=True)
-            except OSError: pass
-
-    def _update_rollback_button(self) -> None:
-        if not hasattr(self, "rollback_button"): return
-        row = self.action_history_table.currentRow(); records = self.action_history_records
-        eligible, reason = (False, "Select a valid rollback-eligible audit record.") if row < 0 or row >= len(records) else rollback_record_eligibility(records[row], records)
-        self.rollback_button.setEnabled(eligible and not self.action_busy); self.rollback_button.setToolTip("Restore the validated captured state after confirmation and UAC." if eligible else reason)
-
-    def _open_hardening_audit(self, timestamp_utc: str = "") -> None:
-        self._set_page(2); self._set_activity_view(1); self._update_action_history(timestamp_utc)
-
     def start_scan(self) -> None:
-        if self.action_busy or (self.scan_thread and self.scan_thread.isRunning()): return
+        if self.scan_thread and self.scan_thread.isRunning(): return
         privilege = self.application_privilege; profile = self.selected_profile
         self.scan_button.setEnabled(False); self.scan_button.setText("Scanning..."); self.export_button.setEnabled(False); self.profile_combo.setEnabled(False)
         self.scan_message.setText(f"Running a {privilege.lower()} read-only scan using the {profile} profile...")
@@ -1441,10 +1231,6 @@ class WinCurWindow(QMainWindow):
         except (ValueError, TypeError): freshness = "Unknown"
         self.assessment_freshness_label.setText(f"Freshness: {freshness}")
         message = "Existing findings re-scored for the selected profile; no new scan was run." if not persist_history else "Scan complete; all assessment views updated."
-        if self.score_before_action is not None:
-            before = f"{self.score_before_action:.1f}%"; after = "Not scored" if envelope.assessment.score is None else f"{envelope.assessment.score:.1f}%"
-            message = f"Verified post-action scan complete. Score before: {before}; after: {after}; coverage: {envelope.assessment.coverage:.1f}%."
-            self.score_before_action = None
         self.scan_message.setText(message); self.scan_button.setEnabled(True); self.scan_button.setText("Scan PC"); self.export_button.setEnabled(True); self.profile_combo.setEnabled(True)
         self.assessment_displayed.emit(envelope)
         self._update_dashboard_baseline(); self._refresh_baseline_assessments()
@@ -1476,102 +1262,6 @@ class WinCurWindow(QMainWindow):
         QMessageBox.warning(self, "WinCur scan failed", message)
 
     def _thread_finished(self) -> None: self.scan_thread = None; self.worker = None
-
-    def _run_elevated_scan(self) -> None:
-        if is_administrator(): self.start_scan(); return
-        self.profile_combo.setEnabled(False)
-        if self.current_record: self.assessment_source_label.setText("Assessment state: Previous result remains visible during the Administrator scan")
-        self._launch_helper("scan", ["--helper-scan", self.selected_profile], "")
-
-    def _launch_helper(self, kind: str, arguments: list[str], action_id: str) -> bool:
-        if self.action_busy or (self.scan_thread and self.scan_thread.isRunning()): return False
-        try:
-            output = pending_output_path(kind); started, message = launch_elevated_helper([*arguments, str(output)])
-        except OSError as exc:
-            started, message = False, f"WinCur could not create a protected helper result path: {exc}"
-        if not started:
-            self.profile_combo.setEnabled(True); self.scan_message.setText(message + " Standard mode remains available.")
-            if kind == "scan" and self.current_record: self.assessment_source_label.setText("Assessment state: Previous result retained; Administrator scan was not started")
-            QMessageBox.warning(self, "Elevated operation not started", message)
-            return False
-        self.pending_path = output; self.pending_kind = kind; self.pending_started = time.monotonic(); self.action_busy = True; self.pending_action_id = action_id
-        self.scan_button.setEnabled(False); self.elevated_button.setEnabled(False); self.apply_button.setEnabled(False); self.preview_button.setEnabled(False); self.preview_selected_button.setEnabled(False); self.rollback_button.setEnabled(False); self.scan_message.setText("Waiting for the explicitly approved elevated helper..."); self.helper_timer.start()
-        if kind == "preview": self.preview_status_title.setText("Administrator preview in progress"); self.preview_status_text.setText("WinCur is waiting for the explicitly approved read-only preview. No changes are being made.")
-        return True
-
-    def _poll_helper(self) -> None:
-        if not self.pending_path: return
-        if time.monotonic() - self.pending_started > 180:
-            kind, action_id = self.pending_kind, self.pending_action_id; self._finish_helper(); self.scan_message.setText("The elevated helper did not return a result. No success was claimed.")
-            if kind == "preview": self.preview_repeat_reasons[action_id] = "The administrator preview timed out. Preview this remediation again; Apply remains unavailable."; self._clear_validated_preview(); self._show_action(self.action_tree.currentItem(), None)
-            return
-        if not self.pending_path.exists(): return
-        try:
-            payload = json.loads(self.pending_path.read_text(encoding="utf-8")); self.pending_path.unlink(missing_ok=True)
-        except (OSError, json.JSONDecodeError) as exc:
-            kind, action_id = self.pending_kind, self.pending_action_id; self._finish_helper()
-            if kind == "preview": self.preview_repeat_reasons[action_id] = "The administrator preview result could not be read. Preview this remediation again; Apply remains unavailable."; self._clear_validated_preview(); self._show_action(self.action_tree.currentItem(), None)
-            QMessageBox.warning(self, "Helper result error", str(exc)); return
-        kind, action_id = self.pending_kind, self.pending_action_id; self._finish_helper()
-        if not isinstance(payload, dict):
-            QMessageBox.warning(self, "Helper result error", "The elevated helper returned an invalid result object. No success was claimed."); return
-        if not payload.get("ok"):
-            if kind == "preview": self.preview_repeat_reasons[action_id] = "The administrator preview failed. Review the reported error and preview this remediation again; Apply remains unavailable."; self._clear_validated_preview(); self._show_action(self.action_tree.currentItem(), None)
-            QMessageBox.warning(self, "Elevated operation failed", str(payload.get("error", "No details were returned."))); return
-        try:
-            if kind == "scan":
-                raw_findings = payload.get("findings")
-                if not isinstance(raw_findings, list): raise ValueError("The helper did not return a findings collection.")
-                findings = [CheckResult.from_dict(item) for item in raw_findings]; assessment = AssessmentScore.from_dict(payload["assessment"])
-                envelope = AssessmentEnvelope(findings, assessment, str(payload["timestamp_utc"]), str(payload["privilege"]), str(payload.get("source", "Live elevated scan")))
-                self._scan_finished(envelope); return
-            if kind == "preview":
-                preview = ActionPreview.from_dict(payload["preview"]); self.previews = [old for old in self.previews if old.action_id != preview.action_id] + [preview]
-                self._accept_validated_preview(preview)
-                for row in range(self.action_tree.topLevelItemCount()):
-                    item = self.action_tree.topLevelItem(row)
-                    if item.data(0, Qt.ItemDataRole.UserRole) == preview.action_id:
-                        item.setText(2, preview.availability.value); item.setText(3, preview.current_configuration); self.action_tree.setCurrentItem(item); break
-                self.scan_message.setText("Elevated preview complete; no settings were changed."); self._show_action(self.action_tree.currentItem(), None); return
-            record = ActionRecord.from_dict(payload["record"])
-        except (KeyError, TypeError, ValueError) as exc:
-            QMessageBox.warning(self, "Helper result error", f"The elevated helper returned incomplete or invalid data. No success was claimed.\n\n{exc}"); return
-        if kind == "action" and record.outcome == ActionOutcome.FAILURE and ("stale" in record.message.casefold() or "configuration changed" in record.message.casefold()):
-            self.preview_repeat_reasons[record.action_id] = "The configuration or management state changed after preview. Preview this remediation again before applying it."
-        self._handle_action_record(record, kind)
-
-    def _handle_action_record(self, record: ActionRecord, kind: str) -> None:
-        saved = True
-        try: save_action_record(record)
-        except OSError as exc:
-            saved = False; QMessageBox.warning(self, "Action history", f"The action result could not be saved and verified: {exc}")
-        self._update_action_history(record.timestamp_utc if saved else "")
-        self.score_before_action = None; self._clear_validated_preview()
-        if kind == "action" and record.outcome == ActionOutcome.SUCCESS:
-            self.scan_message.setText("Action verified. The previous assessment remains displayed and its score has not been refreshed. Run Scan PC when you want a new assessment.")
-        elif kind == "rollback":
-            self.scan_message.setText(f"Rollback {record.outcome.value}: {record.verification_evidence}")
-        else:
-            self.scan_message.setText(f"{record.outcome.value}: {record.verification_evidence}")
-        self._show_action_result(record, kind); self._refresh_action_after_operation(record.action_id)
-
-    def _show_action_result(self, record: ActionRecord, kind: str) -> None:
-        operation = "Rollback" if kind == "rollback" else "Remediation"
-        box = QMessageBox(self); box.setWindowTitle(f"{operation}: {record.outcome.value}"); box.setText(record.message); box.setInformativeText("Verification:\n" + record.verification_evidence)
-        icon = QMessageBox.Icon.Information if record.outcome == ActionOutcome.SUCCESS else QMessageBox.Icon.Warning if record.outcome == ActionOutcome.PARTIAL else QMessageBox.Icon.Critical
-        box.setIcon(icon); view_button = box.addButton("View in Hardening Audit", QMessageBox.ButtonRole.ActionRole) if kind == "action" and record.outcome == ActionOutcome.SUCCESS else None; box.addButton(QMessageBox.StandardButton.Close); box.exec()
-        if view_button is not None and box.clickedButton() is view_button: self._open_hardening_audit(record.timestamp_utc)
-
-    def _refresh_action_after_operation(self, action_id: str) -> None:
-        if action_id not in ACTIONS or self.action_busy or (self.preview_thread and self.preview_thread.isRunning()): return
-        self.preview_mode = "all"; self._mark_previews_pending([action_id]); self._start_preview_worker(action_id)
-
-    def _finish_helper(self) -> None:
-        path = self.pending_path; self.helper_timer.stop(); self.pending_path = None; self.pending_kind = ""; self.pending_action_id = ""; self.action_busy = False
-        if path:
-            try: path.unlink(missing_ok=True)
-            except OSError: LOGGER.warning("Pending helper result could not be removed: %s", path)
-        self.scan_button.setEnabled(True); self.elevated_button.setEnabled(self.application_privilege != "Administrator"); self.preview_button.setEnabled(True); self.preview_selected_button.setEnabled(True); self.profile_combo.setEnabled(True); self._update_rollback_button()
 
     def _populate(self, assessment: AssessmentScore) -> None:
         self.score_panel.value.setText("Not scored" if assessment.score is None else f"{assessment.score:.1f}%"); self.coverage_panel.value.setText(f"{assessment.coverage:.1f}%")
@@ -1614,7 +1304,7 @@ class WinCurWindow(QMainWindow):
             status_text = f"Informational ({finding.status.value})" if informational else "Could not assess" if finding.status == CheckStatus.UNKNOWN else finding.status.value; item = QTreeWidgetItem([sanitize_display_text(finding.title), effective_severity, status_text, evidence_preview(finding.explanation, 150)]); item.setData(0, Qt.ItemDataRole.UserRole, index); item.setToolTip(0, sanitize_display_text(finding.title)); item.setToolTip(3, sanitize_display_text(finding.explanation))
             self._style_finding_item(item, finding.status, informational); self._style_severity(item, 1, "Informational" if informational else finding.severity); self.tree.addTopLevelItem(item)
         if self.tree.topLevelItemCount(): self.tree.setCurrentItem(self.tree.topLevelItem(0))
-        else: self.detail_title.setText("No current findings match these filters."); self.details.clear(); self.technical_finding_details.clear(); self.finding_fix_button.setEnabled(False); self.settings_button.setEnabled(False)
+        else: self.detail_title.setText("No current findings match these filters."); self.details.clear(); self.technical_finding_details.clear(); self.settings_button.setEnabled(False)
 
     def _refresh_current_filter_options(self) -> None:
         categories = sorted({finding.category for finding in self.findings})
@@ -1673,8 +1363,8 @@ class WinCurWindow(QMainWindow):
         elif finding.status == CheckStatus.UNKNOWN: recommendation = self._unknown_recommendation(finding, self.current_record.assessment_privilege if self.current_record else "Unknown")
         elif remediation: recommendation = remediation.summary
         else: recommendation = "Review this setting manually. WinCur does not provide an automated action for it."
-        why = remediation.impact if remediation else finding.explanation; action_id = self._action_for_check(finding.check_id)
-        available = ("WinCur has a safeguarded action. Open Available Fixes and preview the exact change before deciding whether to apply it." if action_id and finding.status == CheckStatus.FAIL else "No WinCur action is offered for this result." if finding.status != CheckStatus.PASS else "No action is needed for a passing check.")
+        why = remediation.impact if remediation else finding.explanation
+        available = "Review the recommendation and use supported Windows administration tools if you decide to change this setting." if finding.status == CheckStatus.FAIL else "No automatic action is offered for this result." if finding.status != CheckStatus.PASS else "No action is needed for a passing check."
         readable = [("What we found", finding.explanation), ("Why it matters", why), ("Recommended next step", recommendation), ("Available action", available)]
         if baseline_result: readable.append(("Since saved snapshot", f"{self._friendly_baseline_classification(baseline_result.classification)}. {baseline_result.explanation}"))
         self.details.setHtml(html_sections(readable))
@@ -1682,7 +1372,7 @@ class WinCurWindow(QMainWindow):
         technical = [("Raw evidence", finding.evidence), ("Check identifier", finding.check_id), ("Detection status", finding.status.value), ("Severity", finding.severity), ("Scoring eligibility", scoring_eligibility), ("Current scoring treatment", scoring_treatment), ("Assessment privilege", self.current_record.assessment_privilege if self.current_record else "Unknown"), ("Profile and policy", f"{self.current_record.assessment.profile} / {self.current_record.assessment.policy_version}" if self.current_record else "Unknown")]
         if baseline_result: technical.append(("Saved snapshot comparison", f"{baseline_result.classification}. {baseline_result.explanation}"))
         self.technical_finding_details.setHtml(html_sections(technical))
-        self.finding_fix_button.setProperty("actionId", action_id); self.finding_fix_button.setEnabled(bool(action_id and finding.status == CheckStatus.FAIL)); uri = remediation.settings_uri if remediation and finding.status != CheckStatus.PASS else None; self.settings_button.setEnabled(bool(uri)); self.settings_button.setProperty("settingsUri", uri)
+        uri = remediation.settings_uri if remediation and finding.status != CheckStatus.PASS else None; self.settings_button.setEnabled(bool(uri)); self.settings_button.setProperty("settingsUri", uri)
 
     @staticmethod
     def _friendly_baseline_classification(classification: str) -> str:
@@ -1692,10 +1382,6 @@ class WinCurWindow(QMainWindow):
     def _friendly_status(status: str) -> str:
         return "Could not assess" if status == CheckStatus.UNKNOWN.value else status
 
-    @staticmethod
-    def _action_for_check(check_id: str) -> str | None:
-        return {"autorun": "disable_autorun", "powershell_logging": "enable_powershell_logging", "firewall_domain": "enable_firewall_profiles", "firewall_private": "enable_firewall_profiles", "firewall_public": "enable_firewall_profiles"}.get(check_id)
-
     def _toggle_findings_filters(self) -> None:
         visible = self.findings_advanced_filters.isHidden(); self.findings_advanced_filters.setVisible(visible); self.findings_advanced_button.setChecked(visible); self.findings_advanced_button.setText("Hide Advanced Filters" if visible else "Advanced Filters…")
 
@@ -1703,14 +1389,6 @@ class WinCurWindow(QMainWindow):
         visible = self.technical_finding_details.isHidden(); self.technical_finding_details.setVisible(visible)
         if visible: self.finding_detail_splitter.setSizes(self.layout_store.sizes("finding_details_evidence", [330, 170]))
         self.finding_technical_button.setText("Hide Technical Details" if visible else "Show Technical Details")
-
-    def _open_finding_fix(self) -> None:
-        action_id = self.finding_fix_button.property("actionId")
-        if not action_id: return
-        self._open_security_issues(2)
-        for row in range(self.action_tree.topLevelItemCount()):
-            item = self.action_tree.topLevelItem(row)
-            if item.data(0, Qt.ItemDataRole.UserRole) == action_id: self.action_tree.setCurrentItem(item); break
 
     def _open_settings(self) -> None:
         uri = self.settings_button.property("settingsUri")
@@ -1881,11 +1559,10 @@ class WinCurWindow(QMainWindow):
             self.action_history_table.blockSignals(False)
             if selected_row >= 0: self.action_history_table.selectRow(selected_row); self.action_history_table.scrollToItem(self.action_history_table.item(selected_row, 0))
             else: self.action_history_table.clearSelection()
-            self._update_rollback_button()
-        except (OSError, TypeError, ValueError): self.action_history_records = []; self.action_history_table.blockSignals(False); self.action_history_table.setRowCount(0); self._update_rollback_button()
+        except (OSError, TypeError, ValueError): self.action_history_records = []; self.action_history_table.blockSignals(False); self.action_history_table.setRowCount(0)
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self.action_busy or self.pending_history_records or (self.scan_thread and self.scan_thread.isRunning()) or (self.preview_thread and self.preview_thread.isRunning()) or (self.history_thread and self.history_thread.isRunning()): QMessageBox.information(self, "Operation in progress", "Please wait for the current scan, preview, history save, or explicitly approved action to finish."); event.ignore()
+        if self.pending_history_records or (self.scan_thread and self.scan_thread.isRunning()) or (self.history_thread and self.history_thread.isRunning()): QMessageBox.information(self, "Operation in progress", "Please wait for the current scan or history save to finish."); event.ignore()
         else: self.layout_store.save(self.layout_splitters); event.accept()
 
 def main() -> int:

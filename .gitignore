@@ -11,6 +11,7 @@ __pycache__/
 .ruff_cache/
 .tox/
 .nox/
+.cache/
 .coverage
 .coverage.*
 coverage.xml
@@ -35,9 +36,23 @@ work/
 *.appxbundle
 *.cab
 *.toc
+*.obj
+*.lib
+*.exp
+*.ilk
+*.pdb
+CMakeCache.txt
+CMakeFiles/
+Testing/
+.ninja_deps
+.ninja_log
 warn-*.txt
 xref-*.html
 base_library.zip
+
+# Local copies of matching upstream source archives for binary-release review.
+# These are large release inputs, not repository content.
+release-sources/
 BUILD_MANIFEST.json
 packaging-probe.json
 SHA256SUMS.txt

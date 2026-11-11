@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "application_version": "1.0.0",
+  "target": "Windows 11 x64 PyInstaller one-directory distribution",
+  "runtime_components": {
+    "cpython": "3.14.10",
+    "pyside6": "6.12.0",
+    "shiboken6": "6.12.0",
+    "qt": "6.12.0",
+    "openssl": "3.5.9",
+    "microsoft_vc_runtime": "14.51.36247.0",
+    "pyinstaller_bootloader": "6.22.3"
+  },
+  "qt_libraries": [
+    "Qt6Core.dll",
+    "Qt6Gui.dll",
+    "Qt6Network.dll",
+    "Qt6OpenGL.dll",
+    "Qt6Svg.dll",
+    "Qt6Widgets.dll"
+  ],
+  "qt_plugins": [
+    "generic/qtuiotouchplugin.dll",
+    "iconengines/qsvgicon.dll",
+    "imageformats/qgif.dll",
+    "imageformats/qicns.dll",
+    "imageformats/qico.dll",
+    "imageformats/qjpeg.dll",
+    "imageformats/qsvg.dll",
+    "imageformats/qtga.dll",
+    "imageformats/qtiff.dll",
+    "imageformats/qwbmp.dll",
+    "imageformats/qwebp.dll",
+    "networkinformation/qnetworklistmanager.dll",
+    "platforms/qdirect2d.dll",
+    "platforms/qminimal.dll",
+    "platforms/qoffscreen.dll",
+    "platforms/qwindows.dll",
+    "styles/qmodernwindowsstyle.dll",
+    "tls/qcertonlybackend.dll",
+    "tls/qopensslbackend.dll",
+    "tls/qschannelbackend.dll"
+  ],
+  "explicitly_excluded_qt": [
+    "Qt6Pdf.dll",
+    "Qt6Qml.dll",
+    "Qt6QmlMeta.dll",
+    "Qt6QmlModels.dll",
+    "Qt6QmlWorkerScript.dll",
+    "Qt6Quick.dll",
+    "Qt6VirtualKeyboard.dll",
+    "imageformats/qpdf.dll",
+    "platforminputcontexts/qtvirtualkeyboardplugin.dll"
+  ],
+  "third_party_notice_payload": {
+    "schema_version": 1,
+    "manifest": "licenses/third-party/NOTICE_MANIFEST.json",
+    "manifest_sha256": "46365EB98AFC69096B77174D5E3F4124F59FE5032DDBBA93C7414ABB794459FA",
+    "qt_attribution_records": 55,
+    "manifested_files": 153
+  },
+  "notes": [
+    "The inventory records files collected by the maintained specification, not every package installed in the build virtual environment.",
+    "opengl32sw.dll is retained for Qt software-rendering fallback.",
+    "The final build verifier rejects every explicitly excluded Qt file."
+  ]
+}
